@@ -17,6 +17,7 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 #include "graphics/2d.h"
 #include "io/key.h"
 #include "io/mouse.h"
+#include "playerman/player.h"
 
 #define QLOG(...) __android_log_print(ANDROID_LOG_INFO, "WCSagaVR", __VA_ARGS__)
 
@@ -45,6 +46,12 @@ int pointerHand = RIGHT;
 
 // keys injected this frame that must be released on the next update
 SCP_vector<int> pendingKeyUps;
+
+// Throttle lever (0 = stop .. 1 = full), driven by the right stick Y and held where it is left
+float throttleLever = 0.0f;
+bool prevShiftStickUp = false, prevShiftStickDown = false;
+bool prevCommsUp = false, prevCommsDown = false;
+float lastUpdateSeconds = -1.0f;
 
 XrPath path(const char* s)
 {
@@ -156,6 +163,8 @@ void setPadNeutral()
 		return;
 	for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
 		SDL_SetJoystickVirtualAxis(pad, a, 0);
+	// keep the throttle lever where it is (a centred axis would mean half speed)
+	SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, axisValue(1.0f - 2.0f * throttleLever));
 	for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
 		SDL_SetJoystickVirtualButton(pad, b, false);
 }
@@ -360,29 +369,85 @@ void openxr_quest_update(bool stereo_frame)
 	prevMenu = menu;
 
 	if (stereo_frame) {
-		// Flight: mirror Touch 1:1 onto the virtual gamepad
-		if (pad) {
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, axisValue(stL.x));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, axisValue(-stL.y));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, axisValue(stR.x));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, axisValue(-stR.y));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, triggerValue(trigL));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, triggerValue(trigR));
-			SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_SOUTH, a);
-			SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_EAST, b);
-			SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_WEST, x);
-			SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_NORTH, y);
-			SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK, clickL);
-			SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK, clickR);
-			SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, gripL > 0.5f);
-			SDL_SetJoystickVirtualButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, gripR > 0.5f);
+		// Flight: Touch -> virtual gamepad. Bindings: controlconfig (control_config_quest_touch_defaults)
+		const float now = static_cast<float>(SDL_GetTicks()) / 1000.0f;
+		if (lastUpdateSeconds < 0.0f && Player) {
+			// entering flight: start the lever at the ship's current throttle
+			throttleLever = std::max(0.0f, std::min(1.0f, Player->ci.forward_cruise_percent / 100.0f));
 		}
+		const float dt = (lastUpdateSeconds < 0.0f) ? 0.0f : std::min(0.1f, now - lastUpdateSeconds);
+		lastUpdateSeconds = now;
+
+		const bool shift = gripL > 0.5f;
+		const bool comms = Player && (Player->flags & PLAYER_FLAGS_MSG_MODE);
+		auto btn = [](SDL_GamepadButton b, bool down) {
+			if (pad)
+				SDL_SetJoystickVirtualButton(pad, b, down);
+		};
+
+		// right stick Y: throttle lever (full sweep in about one second); with the grip: full / stop
+		if (shift) {
+			const bool up = stR.y > 0.7f, downs = stR.y < -0.7f;
+			if (up && !prevShiftStickUp)
+				throttleLever = 1.0f;
+			if (downs && !prevShiftStickDown)
+				throttleLever = 0.0f;
+			prevShiftStickUp = up;
+			prevShiftStickDown = downs;
+		} else {
+			prevShiftStickUp = prevShiftStickDown = false;
+			if (std::fabs(stR.y) > 0.15f)
+				throttleLever = std::max(0.0f, std::min(1.0f, throttleLever + stR.y * dt));
+		}
+
+		// comms menu open: left stick up/down moves the selection, a trigger or A picks it
+		bool commsUp = false, commsDown = false;
+		if (comms) {
+			commsUp = stL.y > 0.6f && !prevCommsUp;
+			commsDown = stL.y < -0.6f && !prevCommsDown;
+		}
+		prevCommsUp = comms && stL.y > 0.6f;
+		prevCommsDown = comms && stL.y < -0.6f;
+
+		if (pad) {
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, comms ? 0 : axisValue(stL.x));
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, comms ? 0 : axisValue(-stL.y));
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, axisValue(stR.x));
+			// absolute throttle axis: up (-32767) = full speed, down (+32767) = stop
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, axisValue(1.0f - 2.0f * throttleLever));
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, comms ? 0 : triggerValue(trigL));
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, comms ? 0 : triggerValue(trigR));
+		}
+
+		const bool normal = !shift && !comms;
+		btn(SDL_GAMEPAD_BUTTON_SOUTH, normal && a);
+		btn(SDL_GAMEPAD_BUTTON_EAST, normal && b);
+		btn(SDL_GAMEPAD_BUTTON_WEST, normal && x);
+		btn(SDL_GAMEPAD_BUTTON_NORTH, normal && y);
+		btn(SDL_GAMEPAD_BUTTON_LEFT_STICK, normal && clickL);
+		btn(SDL_GAMEPAD_BUTTON_RIGHT_STICK, normal && clickR);
+		btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, gripR > 0.5f);
+		btn(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, false);
+
+		// second layer (left grip held)
+		btn(SDL_GAMEPAD_BUTTON_MISC1, shift && a);
+		btn(SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1, shift && b);
+		btn(SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, shift && x);
+		btn(SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, (shift || comms) && y); // also closes the comms menu
+		btn(SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, shift && clickL);
+
+		// comms menu
+		btn(SDL_GAMEPAD_BUTTON_DPAD_UP, commsUp);
+		btn(SDL_GAMEPAD_BUTTON_DPAD_DOWN, commsDown);
+		btn(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, comms && (a || trigL > 0.6f || trigR > 0.6f));
+
 		if (prevTrigger) {
 			mouse_mark_button(MOUSE_LEFT_BUTTON, 0);
 			prevTrigger = false;
 		}
 	} else {
 		// Menus: neutral pad, laser pointer drives the mouse
+		lastUpdateSeconds = -1.0f;
 		setPadNeutral();
 
 		// the hand that pulls its trigger takes over the pointer

@@ -30,6 +30,10 @@
 
 #include <map>
 
+#ifdef __ANDROID__
+#include <SDL3/SDL_gamepad.h>
+#endif
+
 // z64: These enumerations MUST equal to those in controlsconfig.cpp...
 // z64: Really need a better way than this.
 enum CC_tab {
@@ -1899,6 +1903,60 @@ void control_config_common_read_section(int s, bool first_override) {
 	mprintf(("[controlconfigdefaults.tbl] Ignoring duplicate Preset '%s'\n", new_preset.name.c_str()));
 };
 
+#ifdef __ANDROID__
+/**
+ * @brief Meta Quest: replace the default joystick bindings with the Touch controller layout.
+ *
+ * The Touch controllers are exposed as a virtual SDL gamepad (graphics/openxr_quest.cpp).
+ * Joystick indices are SDL gamepad enums; the triggers are the extended buttons after
+ * SDL_GAMEPAD_BUTTON_COUNT. Keyboard and mouse defaults stay untouched, and every binding
+ * can still be changed in the game's control options.
+ */
+static void control_config_quest_touch_defaults(CC_preset& preset)
+{
+	auto& b = preset.bindings;
+	for (auto& item : b) {
+		if (item.first.get_cid() == CID_JOY0)
+			item.first.clear();
+		if (item.second.get_cid() == CID_JOY0)
+			item.second.clear();
+	}
+
+	const short TRIGGER_L = static_cast<short>(SDL_GAMEPAD_BUTTON_COUNT + 0);
+	const short TRIGGER_R = static_cast<short>(SDL_GAMEPAD_BUTTON_COUNT + 1);
+	auto axis = [&b](IoActionId a, short ax) { b[a].take(CC_bind(CID_JOY0, ax, CCF_AXIS), 0); };
+	auto button = [&b](IoActionId a, short btn) { b[a].take(CC_bind(CID_JOY0, btn), 1); };
+
+	// Left stick: pitch + turn. Right stick: X = roll, Y = throttle lever (absolute axis)
+	axis(JOY_HEADING_AXIS, JOY_X_AXIS);      // SDL left X
+	axis(JOY_PITCH_AXIS, JOY_Y_AXIS);        // SDL left Y
+	axis(JOY_BANK_AXIS, JOY_Z_AXIS);         // SDL right X
+	axis(JOY_ABS_THROTTLE_AXIS, JOY_RX_AXIS); // SDL right Y (held lever value)
+
+	button(FIRE_PRIMARY, TRIGGER_R);                                        // right trigger
+	button(FIRE_SECONDARY, TRIGGER_L);                                      // left trigger
+	button(AFTERBURNER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);                 // right grip
+	button(TARGET_NEXT_CLOSEST_HOSTILE, SDL_GAMEPAD_BUTTON_SOUTH);          // A
+	button(TARGET_SHIP_IN_RETICLE, SDL_GAMEPAD_BUTTON_EAST);                // B
+	button(CYCLE_SECONDARY, SDL_GAMEPAD_BUTTON_WEST);                       // X
+	button(CYCLE_NEXT_PRIMARY, SDL_GAMEPAD_BUTTON_NORTH);                   // Y
+	button(AUTO_PILOT_TOGGLE, SDL_GAMEPAD_BUTTON_LEFT_STICK);               // left stick click
+	button(MATCH_TARGET_SPEED, SDL_GAMEPAD_BUTTON_RIGHT_STICK);             // right stick click
+
+	// Second layer (left grip held)
+	button(TARGET_NEXT, SDL_GAMEPAD_BUTTON_MISC1);                          // grip + A
+	button(TARGET_CLOSEST_SHIP_ATTACKING_TARGET, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1); // grip + B
+	button(TARGET_NEXT_SUBOBJECT, SDL_GAMEPAD_BUTTON_LEFT_PADDLE1);         // grip + X
+	button(SQUADMSG_MENU, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2);                // grip + Y
+	button(PADLOCK_DOWN, SDL_GAMEPAD_BUTTON_LEFT_PADDLE2);                  // grip + left stick click (view rear)
+
+	// Comms menu navigation (sent only while the comms menu is open)
+	button(COMMS_MENU_MOVE_UP, SDL_GAMEPAD_BUTTON_DPAD_UP);
+	button(COMMS_MENU_MOVE_DOWN, SDL_GAMEPAD_BUTTON_DPAD_DOWN);
+	button(COMMS_MENU_SELECT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+}
+#endif
+
 /**
  * @brief Reads controlconfigdefaults.tbl.  Adds a preset to Control_config_presets or overrides the hardcoded default preset
  */
@@ -1923,6 +1981,15 @@ void control_config_common_read_tbl() {
 	}
 
 	mprintf(("[controlconfigdefaults.tbl] found %i sections\n", sections_read));
+
+#ifdef __ANDROID__
+	control_config_quest_touch_defaults(Control_config_presets[0]);
+	for (size_t i = 0; i < std::min(Control_config.size(), Control_config_presets[0].bindings.size()); ++i) {
+		Control_config[i].first = Control_config_presets[0].bindings[i].first;
+		Control_config[i].second = Control_config_presets[0].bindings[i].second;
+	}
+	mprintf(("Applied the Quest Touch controller defaults\n"));
+#endif
 }
 
 /**
