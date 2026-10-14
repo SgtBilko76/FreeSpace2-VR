@@ -392,12 +392,16 @@ void player_select_do()
 	int k;
 
 	// Goober5000 - display a popup warning about problems in the mod
+	// (not on the Quest: the player can't fix the mod's tables there, and the release build
+	// logs table warnings that a normal release build would not count)
+#ifndef __ANDROID__
 	if ((Global_warning_count > 10 || Global_error_count > 0) && !Startup_warning_dialog_displayed) {
 		char text[512];
 		sprintf(text, XSTR ("Warning!\n\nThe currently active mod has generated %d warnings and/or errors during program startup.  These could have been caused by anything from incorrectly formatted table files to corrupt models.\n\nWhile FreeSpace Open will attempt to compensate for these issues, it cannot guarantee a trouble-free gameplay experience.\n\nPlease contact the authors of the mod for assistance.", 1640), Global_warning_count + Global_error_count);
 		popup(PF_TITLE_BIG | PF_TITLE_RED | PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, text);
 		Startup_warning_dialog_displayed = true;
 	}
+#endif
 
 	if (!Ingame_options_save_found && Using_in_game_options && !Save_file_warning_displayed) {
 		popup(PF_BODY_BIG | PF_USE_AFFIRMATIVE_ICON, 1, POPUP_OK, XSTR("A new settings file has been created for the current game or mod. You may want to check the options menu to ensure everything is set to your liking.", 1854));

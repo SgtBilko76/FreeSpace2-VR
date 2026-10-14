@@ -1,4 +1,11 @@
+#if defined(FS_OPENXR) && defined(__ANDROID__)
+#include <jni.h>
+#include <SDL3/SDL_system.h>
+#define XR_USE_PLATFORM_ANDROID
+#endif
+
 #include "openxr_internal.h"
+#include "openxr_quest.h"
 
 #include "camera/camera.h"
 #include "graphics/2d.h"
@@ -78,6 +85,28 @@ void openxr_prepare(float hudscale) {
 static bool openxr_init_instance() {
 	auto extensions = gr_openxr_get_extensions();
 
+#ifdef __ANDROID__
+	// Android loader: must be initialized with the JavaVM and activity before anything else
+	JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+	JavaVM* vm = nullptr;
+	if (env)
+		env->GetJavaVM(&vm);
+	jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+
+	PFN_xrInitializeLoaderKHR initializeLoader = nullptr;
+	if (xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR", (PFN_xrVoidFunction*)&initializeLoader) == XR_SUCCESS && initializeLoader) {
+		XrLoaderInitInfoAndroidKHR loaderInit{ XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR, nullptr, vm, activity };
+		XrResult r = initializeLoader((const XrLoaderInitInfoBaseHeaderKHR*)&loaderInit);
+		mprintf(("OpenXR: xrInitializeLoaderKHR returned %d\n", static_cast<int>(r)));
+	} else {
+		mprintf(("OpenXR: xrInitializeLoaderKHR not available!\n"));
+	}
+
+	XrInstanceCreateInfoAndroidKHR androidCreateInfo{ XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR, nullptr, vm, activity };
+	for (const char* ext : openxr_quest_instance_extensions())
+		extensions.push_back(ext);
+#endif
+
 	const gameversion::version& fso_version = gameversion::get_executable_version();
 	const gameversion::version& mod_version(Mod_version);
 
@@ -87,7 +116,11 @@ static bool openxr_init_instance() {
 
 	XrInstanceCreateInfo instanceCreateInfo {
 		XR_TYPE_INSTANCE_CREATE_INFO,
+#ifdef __ANDROID__
+		&androidCreateInfo,
+#else
 		nullptr,
+#endif
 		0,
 		XrApplicationInfo {
 			"", //Modname
@@ -181,6 +214,14 @@ static bool openxr_init_swapchains() {
 	std::array<XrSwapchain, 2> swapchains;
 	for (uint32_t i = 0; i < 2; i++)
 	{
+#ifdef __ANDROID__
+		// Standalone headsets recommend a supersampled size (2800x2933 on Quest 3). FSO renders each
+		// eye at the VR render resolution and blits it, so a larger swapchain only costs bandwidth.
+		if (gr_screen.max_w > 0 && gr_screen.max_h > 0) {
+			xr_configurationviews[i].recommendedImageRectWidth = std::min(xr_configurationviews[i].recommendedImageRectWidth, static_cast<uint32_t>(gr_screen.max_w));
+			xr_configurationviews[i].recommendedImageRectHeight = std::min(xr_configurationviews[i].recommendedImageRectHeight, static_cast<uint32_t>(gr_screen.max_h));
+		}
+#endif
 		XrSwapchainCreateInfo swapchainCreateInfo {
 			XR_TYPE_SWAPCHAIN_CREATE_INFO,
 			nullptr,
@@ -325,6 +366,8 @@ void openxr_init() {
 	if (!openxr_init_space())
 		return;
 
+	openxr_quest_init();
+
 	openxr_initialized = true;
 
 	mprintf(("OpenXR initialized!\n"));
@@ -339,6 +382,7 @@ void openxr_init() {
 }
 
 void openxr_close() {
+	openxr_quest_close();
 	xrDestroySpace(xr_space);
 	for (auto& sc : xr_swapchains)
 		sc.release();
@@ -462,6 +506,7 @@ OpenXRTrackingInfo openxr_start_stereo_frame() {
 	xr_stage = OpenXRFBStage::FIRST;
 
 	openxr_start_frame();
+	openxr_quest_update(true);
 
 	OpenXRTrackingInfo info{};
 

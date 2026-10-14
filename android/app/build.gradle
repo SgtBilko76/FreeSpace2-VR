@@ -64,3 +64,8 @@ android {
         abortOnError false
     }
 }
+
+dependencies {
+    // Khronos OpenXR loader; same version the engine links against (lib/openxr_android.cmake)
+    implementation 'org.khronos.openxr:openxr_loader_for_android:1.1.63'
+}

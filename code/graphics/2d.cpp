@@ -628,9 +628,16 @@ static SCP_vector<ResolutionInfo> resolution_vr_enumerator()
 {
 	SCP_vector<ResolutionInfo> out;
 
+#ifdef __ANDROID__
+	// Standalone headsets: finer steps at the low end, the GPU is the limit
+	for (int i = 1000; i <= 2000; i += 250) {
+		out.emplace_back(ResolutionInfo(i, i));
+	}
+#else
 	for (int i = 1000; i <= 6000; i += 500) {
 		out.emplace_back(ResolutionInfo(i, i));
 	}
+#endif
 
 	return out;
 }
@@ -669,7 +676,12 @@ static ResolutionInfo resolution_default()
 }
 static ResolutionInfo resolution_vr_default()
 {
+#ifdef __ANDROID__
+	// Standalone headsets (Quest): render both eyes on a mobile GPU
+	return {(uint32_t)1250, (uint32_t)1250};
+#else
 	return {(uint32_t)2500, (uint32_t)2500};
+#endif
 }
 static bool resolution_change(const ResolutionInfo& info __UNUSED, bool initial)
 {

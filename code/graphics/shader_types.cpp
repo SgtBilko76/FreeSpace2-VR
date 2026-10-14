@@ -155,6 +155,8 @@ static ShaderVariantInfo SHADER_VARIANTS[] = {
 
 	{SDR_TYPE_COPY, false, SDR_FLAG_COPY_CLAMP01, "CLAMP01", {}, "Clamp copy to [0,1] (HDR edge-detection proxy)"},
 
+	{SDR_TYPE_COPY, false, SDR_FLAG_COPY_LUMA_ALPHA, "LUMA_ALPHA", {}, "Output alpha = brightest colour channel (additive HUD on black -> premultiplied overlay)"},
+
 	{SDR_TYPE_POST_PROCESS_TONEMAPPING, false, SDR_FLAG_TONEMAPPING_LINEAR_OUT, "LINEAR_OUT", {}, "Will make the tonemapper output in linear color space and not in sRGB"},
 
 	{SDR_TYPE_GAMMA_BLIT, false, SDR_FLAG_GAMMA_HDR10, "HDR10_OUTPUT", {}, "Encode the gamma-corrected frame for HDR10 (PQ / BT.2020) output instead of SDR"},

@@ -21,7 +21,8 @@ fi
 # 2) engine for arm64
 if [ ! -f "$B/build.ninja" ]; then
   cmake -S "$ROOT" -B "$B" -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" -DCMAKE_BUILD_TYPE=Release \
-    -DFSO_BUILD_WITH_OPENGL_ES=ON -DFSO_BUILD_WITH_OPENXR=OFF -DFSO_BUILD_QTFRED=OFF \
+    -DFSO_BUILD_WITH_OPENGL_ES=ON -DFSO_BUILD_WITH_OPENXR=ON -DFSO_BUILD_WITH_VULKAN=OFF \
+    -DFSO_BUILD_QTFRED=OFF -DFSO_RELEASE_LOGGING=ON \
     -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a \
     -DANDROID_PLATFORM=android-28 -DEMBEDFILE_PATH="$HOST/bin/embedfile"
 fi
@@ -45,7 +46,10 @@ for a in "$@"; do
   case "$a" in
     --install) "$ADB" install -r -g "$APK"
                "$ADB" shell appops set com.bilko.wcsagavr MANAGE_EXTERNAL_STORAGE allow ;;
-    --run)     "$ADB" shell am force-stop com.bilko.wcsagavr
+    --run)     "$ADB" shell am broadcast -a com.oculus.vrpowermanager.prox_close >/dev/null
+               "$ADB" shell input keyevent KEYCODE_WAKEUP
+               "$ADB" shell am force-stop com.bilko.wcsagavr
+               "$ADB" logcat -c
                "$ADB" shell am start -n com.bilko.wcsagavr/.WCSagaActivity ;;
   esac
 done

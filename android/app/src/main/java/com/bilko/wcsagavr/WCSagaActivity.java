@@ -58,6 +58,15 @@ public class WCSagaActivity extends SDLActivity {
 
     @Override
     protected String[] getArguments() {
-        return new String[] { "-mod", MOD };
+        java.util.ArrayList<String> args = new java.util.ArrayList<>(java.util.Arrays.asList("-mod", MOD, "-vr"));
+        // Extra engine arguments for testing, e.g.
+        //   adb shell am start -n com.bilko.wcsagavr/.WCSagaActivity --es fsoArgs "-pilot Bilko -start_mission M01-BG-Hermes.fs2"
+        Intent i = getIntent();
+        String extra = (i != null) ? i.getStringExtra("fsoArgs") : null;
+        if (extra != null && !extra.trim().isEmpty()) {
+            args.addAll(java.util.Arrays.asList(extra.trim().split("\\s+")));
+        }
+        Log.i(TAG, "engine arguments: " + args);
+        return args.toArray(new String[0]);
     }
 }

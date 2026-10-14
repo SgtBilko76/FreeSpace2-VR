@@ -1,4 +1,5 @@
 #ifdef GL_ES
+precision highp float;
 precision highp sampler2D;
 precision highp sampler2DArray;
 #endif
@@ -30,5 +31,11 @@ void main()
 	// e.g. for FXAA/SMAA edge detection when the real output carries values
 	// above 1.0.
 	fragOut0 = min(fragOut0, vec4(1.0));
+#endif
+
+#ifdef LUMA_ALPHA
+	// The HUD is drawn additively on black: treat it as a premultiplied overlay whose
+	// coverage is its brightest channel (used for the VR HUD composition layer).
+	fragOut0.a = max(fragOut0.r, max(fragOut0.g, fragOut0.b));
 #endif
 }

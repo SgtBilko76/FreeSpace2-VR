@@ -1,4 +1,5 @@
 #include "controlconfig/controlsconfig.h"
+#include "graphics/openxr_quest.h"
 #include "io/joy.h"
 #include "io/joy_ff.h"
 #include "io/timer.h"
@@ -242,6 +243,26 @@ void setPlayerJoystick(Joystick* stick, short cid)
 		mprintf((" Joystick %i removed\n", cid));
 	}
 }
+
+#ifdef __ANDROID__
+/**
+ * Meta Quest: if no Joystick 0 is configured, use the virtual gamepad that mirrors the
+ * Touch controllers (created by graphics/openxr_quest.cpp).
+ */
+void autoSelectQuestPad()
+{
+	if (pJoystick[CID_JOY0] != nullptr) {
+		return;
+	}
+	for (auto& stick : joysticks) {
+		if (stick->getName() == OPENXR_QUEST_PAD_NAME) {
+			mprintf(("Selecting the Quest Touch virtual gamepad as Joystick 0\n"));
+			setPlayerJoystick(stick.get(), CID_JOY0);
+			return;
+		}
+	}
+}
+#endif
 
 /**
  * Scripting callback for displaying the given joystick's name
@@ -548,6 +569,9 @@ bool device_event_handler(const SDL_Event &evt)
 				}
 			}
 		}
+#ifdef __ANDROID__
+		autoSelectQuestPad();
+#endif
 	}
 	else if (evtType == SDL_EVENT_JOYSTICK_REMOVED)
 	{
@@ -1241,6 +1265,10 @@ namespace joystick
 				}
 			}
 		}
+
+#ifdef __ANDROID__
+		autoSelectQuestPad();
+#endif
 
 		bool used = false;
 		for (const auto pJoy : pJoystick) {

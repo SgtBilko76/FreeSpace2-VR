@@ -478,6 +478,8 @@ add_file_folder("Graphics"
 	graphics/openxr.cpp
 	graphics/openxr.h
 	graphics/openxr_internal.h
+	graphics/openxr_quest.cpp
+	graphics/openxr_quest.h
 	graphics/post_processing.cpp
 	graphics/post_processing.h
 	graphics/render.cpp

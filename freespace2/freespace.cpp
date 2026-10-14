@@ -67,6 +67,7 @@
 #include "graphics/light.h"
 #include "graphics/matrix.h"
 #include "graphics/openxr.h"
+#include "graphics/openxr_quest.h"
 #include "graphics/shadows.h"
 #include "headtracking/headtracking.h"
 #include "hud/hud.h"
@@ -4039,7 +4040,12 @@ void game_render_hud(camid cid, const fov_t* fov_override = nullptr)
 	gr_reset_clip();
 
 	//Since we render things twice in VR mode, frametime needs to be halved for HUD, as the HUD uses the frametime to advance ANI's and crucially, the missile lock...
+#ifdef __ANDROID__
+	// Quest: the HUD has its own layer and is drawn once per frame
+	float frametime = flFrametime;
+#else
 	float frametime = openxr_enabled() ? flFrametime * 0.5f : flFrametime;
+#endif
 
 	if(cid.isValid()) {
 		g3_start_frame(0);		// 0 = turn zbuffering off
@@ -4208,28 +4214,9 @@ void game_render_post_frame()
 #define DEBUG_TIMER_CALL
 #endif
 
-void game_do_full_frame(DEBUG_TIMER_SIG const vec3d* offset = nullptr, const matrix* rot_offset = nullptr, const fov_t* fov_override = nullptr) {
-	// clear the screen to black
-	gr_reset_clip();
-	if ((Game_detail_flags & DETAIL_FLAG_CLEAR)) {
-		gr_clear();
-	}
-
-	DEBUG_GET_TIME(clear_time2)
-	DEBUG_GET_TIME(render3_time1)
-
-	camid cid = game_render_frame_setup();
-
-	game_render_frame(cid, offset, rot_offset, fov_override);
-
-	//Cutscene bars
-	clip_frame_view();
-
-	// save the eye position and orientation
-	if (Game_mode & GM_MULTIPLAYER) {
-		cid.getCamera()->get_info(&Net_player->s_info.eye_pos, &Net_player->s_info.eye_orient);
-	}
-
+// HUD, HUD animations and the OnHudDraw scripting hook
+static void game_render_hud_section(camid cid, const fov_t* fov_override)
+{
 	Scripting_didnt_draw_hud = 1;
 	auto scripting_param_list = scripting::hook_param_list(
 		scripting::hook_param("Self", 'o', Viewer_obj),
@@ -4264,6 +4251,62 @@ void game_do_full_frame(DEBUG_TIMER_SIG const vec3d* offset = nullptr, const mat
 			scripting::hooks::OnHudDraw->run(scripting::hooks::ObjectDrawConditions{ Viewer_obj }, std::move(scripting_param_list));
 		}
 	}
+}
+
+// Quest VR: true while the eye images are rendered; the HUD then goes to its own
+// cockpit-fixed composition layer (drawn once per frame by game_render_vr_hud_layer)
+static bool Game_vr_hud_layer = false;
+
+#ifdef __ANDROID__
+static void game_render_vr_hud_layer()
+{
+	camid cid = game_render_frame_setup();
+
+	// HUD positions (nose offset, target brackets) come from the mono ship camera
+	g3_start_frame(0);
+	if (cid.isValid()) {
+		g3_set_view(cid.getCamera());
+	} else {
+		g3_set_view_matrix(&vmd_zero_vector, &vmd_identity_matrix, VIEWER_ZOOM_DEFAULT);
+	}
+	if (!(Game_mode & GM_LAB)) {
+		HUD_set_offsets();
+	}
+	g3_end_frame();
+
+	game_render_hud_section(cid, nullptr);
+
+	gr_reset_clip();
+	game_show_time_left();
+	gr_reset_clip();
+}
+#endif
+
+void game_do_full_frame(DEBUG_TIMER_SIG const vec3d* offset = nullptr, const matrix* rot_offset = nullptr, const fov_t* fov_override = nullptr) {
+	// clear the screen to black
+	gr_reset_clip();
+	if ((Game_detail_flags & DETAIL_FLAG_CLEAR)) {
+		gr_clear();
+	}
+
+	DEBUG_GET_TIME(clear_time2)
+	DEBUG_GET_TIME(render3_time1)
+
+	camid cid = game_render_frame_setup();
+
+	game_render_frame(cid, offset, rot_offset, fov_override);
+
+	//Cutscene bars
+	clip_frame_view();
+
+	// save the eye position and orientation
+	if (Game_mode & GM_MULTIPLAYER) {
+		cid.getCamera()->get_info(&Net_player->s_info.eye_pos, &Net_player->s_info.eye_orient);
+	}
+
+	if (!Game_vr_hud_layer) {
+		game_render_hud_section(cid, fov_override);
+	}
 
 	// check to see if we should display the death died popup
 	if (Game_mode & GM_DEAD_BLEW_UP) {
@@ -4294,7 +4337,9 @@ void game_do_full_frame(DEBUG_TIMER_SIG const vec3d* offset = nullptr, const mat
 	game_show_framerate();
 	game_show_eye_pos(cid);
 
-	game_show_time_left();
+	if (!Game_vr_hud_layer) {
+		game_show_time_left();
+	}
 
 	gr_reset_clip();
 	game_render_post_frame();
@@ -4428,6 +4473,16 @@ void game_frame(bool paused)
 
 				const auto& pose = openxr_start_stereo_frame();
 
+#ifdef __ANDROID__
+				// Quest: HUD once, on its own cockpit-fixed layer; the eyes get the scene only
+				if (openxr_quest_hud_begin()) {
+					util::Random::seed(random);
+					game_render_vr_hud_layer();
+					openxr_quest_hud_end();
+					Game_vr_hud_layer = true;
+				}
+#endif
+
 				util::Random::seed(random);
 				game_do_full_frame(DEBUG_TIMER_CALL &pose.eyes[0].offset, &pose.eyes[0].orientation, &pose.eyes[0].zoom);
 				std::swap(Stars, Stars_XRBuffer);
@@ -4438,6 +4493,7 @@ void game_frame(bool paused)
 				util::Random::seed(random);
 				game_do_full_frame(DEBUG_TIMER_CALL &pose.eyes[1].offset, &pose.eyes[1].orientation, &pose.eyes[1].zoom);
 				std::swap(Stars, Stars_XRBuffer);
+				Game_vr_hud_layer = false;
 			}
 		} else {
 			game_show_standalone_framerate();

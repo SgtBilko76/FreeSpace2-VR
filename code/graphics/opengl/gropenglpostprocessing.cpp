@@ -71,7 +71,13 @@ void opengl_post_pass_tonemap()
 	GR_DEBUG_SCOPE("Tonemapping");
 	TRACE_SCOPE(tracing::Tonemapping);
 
-	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_POST_PROCESS_TONEMAPPING, openxr_enabled() ? SDR_FLAG_TONEMAPPING_LINEAR_OUT : 0));
+#ifdef __ANDROID__
+	// Quest: the XR swapchain receives display-ready sRGB values (see gropenglopenxr.cpp)
+	const int tonemap_flags = 0;
+#else
+	const int tonemap_flags = openxr_enabled() ? SDR_FLAG_TONEMAPPING_LINEAR_OUT : 0;
+#endif
+	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_POST_PROCESS_TONEMAPPING, tonemap_flags));
 
 	Current_shader->program->Uniforms.setTextureUniform("tex", 0);
 	
