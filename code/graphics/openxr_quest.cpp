@@ -478,6 +478,7 @@ void openxr_quest_update(bool stereo_frame)
 
 SCP_vector<const char*> openxr_quest_instance_extensions() { return {}; }
 bool openxr_quest_hud_begin() { return false; }
+float openxr_quest_hud_half_fov() { return 0.0f; }
 void openxr_quest_hud_end() {}
 void openxr_quest_init() {}
 void openxr_quest_close() {}

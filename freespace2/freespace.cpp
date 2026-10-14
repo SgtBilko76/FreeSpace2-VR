@@ -4262,19 +4262,28 @@ static void game_render_vr_hud_layer()
 {
 	camid cid = game_render_frame_setup();
 
-	// HUD positions (nose offset, target brackets) come from the mono ship camera
+	// HUD positions (nose offset, target brackets) come from the mono ship camera with a
+	// symmetric FOV that matches the HUD composition layer (see openxr_quest_hud_half_fov)
+	const float hud_zoom = (2.0f * openxr_quest_hud_half_fov()) / PROJ_FOV_FACTOR;
+	const fov_t hud_fov = hud_zoom;
+	// every g3_set_view() in the HUD code must use it (g3_set_fov() alone keeps a stale scale)
+	const float saved_sexp_fov = Sexp_fov;
+	if (Sexp_fov <= 0.0f) {
+		Sexp_fov = hud_zoom;
+	}
 	g3_start_frame(0);
 	if (cid.isValid()) {
 		g3_set_view(cid.getCamera());
 	} else {
-		g3_set_view_matrix(&vmd_zero_vector, &vmd_identity_matrix, VIEWER_ZOOM_DEFAULT);
+		g3_set_view_matrix(&vmd_zero_vector, &vmd_identity_matrix, hud_fov);
 	}
 	if (!(Game_mode & GM_LAB)) {
 		HUD_set_offsets();
 	}
 	g3_end_frame();
 
-	game_render_hud_section(cid, nullptr);
+	game_render_hud_section(cid, &hud_fov);
+	Sexp_fov = saved_sexp_fov;
 
 	gr_reset_clip();
 	game_show_time_left();

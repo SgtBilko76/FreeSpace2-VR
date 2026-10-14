@@ -364,7 +364,21 @@ static XrSwapchain xr_hud_swapchain = XR_NULL_HANDLE;
 static SCP_vector<XrSwapchainImageGL> xr_hud_images;
 static uint32_t xr_hud_w = 0, xr_hud_h = 0;
 static bool xr_hud_ready = false; // the HUD image was written for the current frame
-static constexpr float XR_HUD_DISTANCE = 3.0f; // metres
+// Far enough that head movement and eye convergence barely shift the reticle against
+// distant targets; the angular size does not depend on it.
+static constexpr float XR_HUD_DISTANCE = 10.0f; // metres
+
+// Half field of view (radians) of the symmetric camera the HUD is drawn with. FSO's 2D
+// projection (reticle at the image centre, target brackets, lead indicators) only matches
+// the GPU projection for a symmetric frustum, so the HUD pass must not use the asymmetric
+// eye FOV: its image centre would sit ~13 degrees below the ship's nose on a Quest 3.
+float openxr_quest_hud_half_fov() {
+	if (!openxr_enabled())
+		return 0.0f;
+	const float h = 0.25f * (xr_views[0].fov.angleRight - xr_views[0].fov.angleLeft + xr_views[1].fov.angleRight - xr_views[1].fov.angleLeft);
+	const float v = 0.25f * (xr_views[0].fov.angleUp - xr_views[0].fov.angleDown + xr_views[1].fov.angleUp - xr_views[1].fov.angleDown);
+	return std::max(h, v);
+}
 
 static bool openxr_create_hud_swapchain() {
 	xr_hud_w = static_cast<uint32_t>(gr_screen.max_w);
@@ -443,13 +457,13 @@ void openxr_quest_hud_end() {
 	xr_hud_ready = true;
 }
 
-// Quad covering exactly the mono game camera's frustum (average of both eye FOVs), so
-// target brackets drawn by the HUD line up with the ships in the eye images.
+// Quad covering exactly the symmetric HUD camera's frustum (centred on the ship's nose),
+// so the reticle, target brackets and lead indicators line up with the eye images.
 static XrCompositionLayerQuad openxr_hud_layer() {
-	const float tL = std::tan(-0.5f * (xr_views[0].fov.angleLeft + xr_views[1].fov.angleLeft));
-	const float tR = std::tan(0.5f * (xr_views[0].fov.angleRight + xr_views[1].fov.angleRight));
-	const float tU = std::tan(0.5f * (xr_views[0].fov.angleUp + xr_views[1].fov.angleUp));
-	const float tD = std::tan(-0.5f * (xr_views[0].fov.angleDown + xr_views[1].fov.angleDown));
+	// FSO's float FOV is vertical; the horizontal extent follows the render aspect
+	const float tV = std::tan(openxr_quest_hud_half_fov());
+	const float tH = tV * gr_screen.clip_aspect;
+	const float tL = tH, tR = tH, tU = tV, tD = tV;
 	const float D = XR_HUD_DISTANCE;
 
 	XrCompositionLayerQuad quad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
