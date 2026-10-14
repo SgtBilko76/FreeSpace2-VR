@@ -678,7 +678,7 @@ static ResolutionInfo resolution_vr_default()
 {
 #ifdef __ANDROID__
 	// Standalone headsets (Quest): render both eyes on a mobile GPU
-	return {(uint32_t)1250, (uint32_t)1250};
+	return {(uint32_t)1680, (uint32_t)1680};
 #else
 	return {(uint32_t)2500, (uint32_t)2500};
 #endif
