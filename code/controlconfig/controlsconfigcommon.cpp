@@ -1949,6 +1949,7 @@ static void control_config_quest_touch_defaults(CC_preset& preset)
 	button(TARGET_NEXT_SUBOBJECT, SDL_GAMEPAD_BUTTON_LEFT_PADDLE1);         // grip + X
 	button(SQUADMSG_MENU, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2);                // grip + Y
 	button(PADLOCK_DOWN, SDL_GAMEPAD_BUTTON_LEFT_PADDLE2);                  // grip + left stick click (view rear)
+	button(VIEW_CHASE, SDL_GAMEPAD_BUTTON_MISC2);                           // grip + right stick click (chase view)
 
 	// Comms menu navigation (sent only while the comms menu is open)
 	button(COMMS_MENU_MOVE_UP, SDL_GAMEPAD_BUTTON_DPAD_UP);

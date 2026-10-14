@@ -435,6 +435,7 @@ void openxr_quest_update(bool stereo_frame)
 		btn(SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, shift && x);
 		btn(SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, (shift || comms) && y); // also closes the comms menu
 		btn(SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, shift && clickL);
+		btn(SDL_GAMEPAD_BUTTON_MISC2, shift && clickR); // chase view on / off
 
 		// comms menu
 		btn(SDL_GAMEPAD_BUTTON_DPAD_UP, commsUp);
