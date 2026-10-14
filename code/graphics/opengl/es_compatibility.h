@@ -50,6 +50,7 @@
 #define GLAD_GL_ARB_draw_buffers_blend			GL_TRUE // ES 3.2 (glBlendFunci and glBlendEquationi)
 #define GLAD_GL_ARB_vertex_attrib_binding		GL_TRUE // ES 3.1
 #define GL_DEPTH_CLAMP							GL_DEPTH_CLAMP_EXT
+#define GLAD_GL_ARB_ES3_compatibility			GL_TRUE
 
 //Functions Redefinitions
 #define glBlendFunciARB					glBlendFunci // ES 3.2
