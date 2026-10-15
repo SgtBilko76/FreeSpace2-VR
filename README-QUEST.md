@@ -16,8 +16,9 @@ game data (about 7 GB) is downloaded separately.
      `python3 tools/quest/get_wcs_data.py WCSaga --push`
      (downloads about 3.7 GB from the FSNebula mod repository, checks it,
      unpacks it and copies it to the Quest).
-   - Or install *Wing Commander Saga* with [Knossos.NET](https://knossos.net)
-     and copy the mod folder (the one that contains `data`) to
+   - Or, on a Windows PC: download the full game and patch v1.1.0.7822 from
+     [wcsaga.com](https://www.wcsaga.com/downloads/), install the game, then the
+     patch, and copy the whole installed game folder to
      `/sdcard/WCSaga/Wing_Commander_Saga` with SideQuest.
 3. Start **Wing Commander Saga VR** from *Unknown Sources* and allow
    "access to all files" when asked.
