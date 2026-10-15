@@ -4258,8 +4258,45 @@ static void game_render_hud_section(camid cid, const fov_t* fov_override)
 static bool Game_vr_hud_layer = false;
 
 #ifdef __ANDROID__
+// Shrinks the screen to the 4:3 HUD canvas (bottom rows of the back buffer) while the HUD
+// layer is drawn, the same way bm_set_render_target() resizes it for render targets: the
+// gauge layouts are 4:3 and would otherwise be stretched onto the square eye image.
+struct vr_hud_canvas {
+	int max_h, max_h_unscaled, max_h_unscaled_zoomed, center_h, center_offset_y;
+	vr_hud_canvas()
+	{
+		max_h = gr_screen.max_h;
+		max_h_unscaled = gr_screen.max_h_unscaled;
+		max_h_unscaled_zoomed = gr_screen.max_h_unscaled_zoomed;
+		center_h = gr_screen.center_h;
+		center_offset_y = gr_screen.center_offset_y;
+
+		const int h = static_cast<int>(std::lround(gr_screen.max_w / OPENXR_QUEST_HUD_ASPECT));
+		gr_screen.max_h = h;
+		gr_screen.max_h_unscaled = static_cast<int>(std::lround(gr_screen.max_w_unscaled / OPENXR_QUEST_HUD_ASPECT));
+		gr_screen.max_h_unscaled_zoomed = static_cast<int>(std::lround(gr_screen.max_w_unscaled_zoomed / OPENXR_QUEST_HUD_ASPECT));
+		gr_screen.center_h = static_cast<int>(std::lround(gr_screen.center_w / OPENXR_QUEST_HUD_ASPECT));
+		gr_screen.center_offset_y = 0;
+		gr_reset_clip();
+		gr_setup_viewport();
+		gr_reset_screen_scale();
+	}
+	~vr_hud_canvas()
+	{
+		gr_screen.max_h = max_h;
+		gr_screen.max_h_unscaled = max_h_unscaled;
+		gr_screen.max_h_unscaled_zoomed = max_h_unscaled_zoomed;
+		gr_screen.center_h = center_h;
+		gr_screen.center_offset_y = center_offset_y;
+		gr_reset_clip();
+		gr_setup_viewport();
+		gr_reset_screen_scale();
+	}
+};
+
 static void game_render_vr_hud_layer()
 {
+	vr_hud_canvas canvas;
 	camid cid = game_render_frame_setup();
 
 	// HUD positions (nose offset, target brackets) come from the mono ship camera with a

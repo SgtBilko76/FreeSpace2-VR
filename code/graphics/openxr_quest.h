@@ -20,8 +20,11 @@ void openxr_quest_update(bool stereo_frame);
 // begin() returns false when the HUD layer is not available (then draw nothing).
 bool openxr_quest_hud_begin();
 void openxr_quest_hud_end();
-// Half FOV (radians) of the symmetric camera the HUD layer is drawn with (0 = not in VR)
+// Half vertical FOV (radians) of the symmetric camera the HUD layer is drawn with (0 = not in VR)
 float openxr_quest_hud_half_fov();
+// The HUD is drawn on a 4:3 canvas (the aspect its gauge layouts are made for), so gauges and
+// the crosshair keep their shape: width = eye render width, height = width / this aspect
+constexpr float OPENXR_QUEST_HUD_ASPECT = 4.0f / 3.0f;
 
 // Name of the virtual gamepad (used to auto-select it as Joystick 0)
 extern const char* const OPENXR_QUEST_PAD_NAME;

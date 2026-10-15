@@ -368,21 +368,22 @@ static bool xr_hud_ready = false; // the HUD image was written for the current f
 // distant targets; the angular size does not depend on it.
 static constexpr float XR_HUD_DISTANCE = 10.0f; // metres
 
-// Half field of view (radians) of the symmetric camera the HUD is drawn with. FSO's 2D
-// projection (reticle at the image centre, target brackets, lead indicators) only matches
+// Half vertical field of view (radians) of the symmetric camera the HUD is drawn with. FSO's
+// 2D projection (reticle at the image centre, target brackets, lead indicators) only matches
 // the GPU projection for a symmetric frustum, so the HUD pass must not use the asymmetric
 // eye FOV: its image centre would sit ~13 degrees below the ship's nose on a Quest 3.
+// Horizontally the HUD spans the eye FOV; vertically it follows the 4:3 HUD canvas.
 float openxr_quest_hud_half_fov() {
 	if (!openxr_enabled())
 		return 0.0f;
 	const float h = 0.25f * (xr_views[0].fov.angleRight - xr_views[0].fov.angleLeft + xr_views[1].fov.angleRight - xr_views[1].fov.angleLeft);
 	const float v = 0.25f * (xr_views[0].fov.angleUp - xr_views[0].fov.angleDown + xr_views[1].fov.angleUp - xr_views[1].fov.angleDown);
-	return std::max(h, v);
+	return std::atan(std::tan(std::max(h, v)) / OPENXR_QUEST_HUD_ASPECT);
 }
 
 static bool openxr_create_hud_swapchain() {
 	xr_hud_w = static_cast<uint32_t>(gr_screen.max_w);
-	xr_hud_h = static_cast<uint32_t>(gr_screen.max_h);
+	xr_hud_h = static_cast<uint32_t>(std::lround(gr_screen.max_w / OPENXR_QUEST_HUD_ASPECT));
 	XrSwapchainCreateInfo info{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
 	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
 	info.format = xr_swapchains[0]->format;
@@ -445,7 +446,8 @@ void openxr_quest_hud_end() {
 	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_COPY, SDR_FLAG_COPY_CLAMP01 | SDR_FLAG_COPY_LUMA_ALPHA));
 	GL_state.Texture.Enable(0, GL_TEXTURE_2D, Back_texture);
 	Current_shader->program->Uniforms.setTextureUniform("tex", 0);
-	opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, 1.0f);
+	// the HUD canvas is the bottom xr_hud_h rows of the back buffer (GL origin bottom-left)
+	opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, i2fl(xr_hud_h) / i2fl(gr_screen.max_h));
 
 	glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0);
 	glDrawBuffer(GL_NONE);
@@ -462,7 +464,7 @@ void openxr_quest_hud_end() {
 static XrCompositionLayerQuad openxr_hud_layer() {
 	// FSO's float FOV is vertical; the horizontal extent follows the render aspect
 	const float tV = std::tan(openxr_quest_hud_half_fov());
-	const float tH = tV * gr_screen.clip_aspect;
+	const float tH = tV * OPENXR_QUEST_HUD_ASPECT;
 	const float tL = tH, tR = tH, tU = tV, tD = tV;
 	const float D = XR_HUD_DISTANCE;
 
