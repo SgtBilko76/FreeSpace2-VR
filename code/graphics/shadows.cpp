@@ -48,12 +48,7 @@ SCP_vector<float> Shadow_cascade_distances;
 
 static SCP_vector<light_frustum_info> Shadow_frustums;
 
-#ifdef __ANDROID__
-// Quest: the GPU has room for medium shadows at the VR resolution (flight is CPU bound)
-ShadowQuality Shadow_quality = ShadowQuality::Medium;
-#else
 ShadowQuality Shadow_quality = ShadowQuality::Disabled;
-#endif
 
 bool Shadow_quality_uses_mod_option = false; 
 

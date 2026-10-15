@@ -102,13 +102,7 @@ DCF(light,"Changes lighting parameters")
 }
 
 // used by In-Game Options menu
-#ifdef __ANDROID__
-// Quest (GLES): the deferred path loses the skybox and lights models flat, so default to
-// forward lighting, which renders shading, shine maps, environment reflections and shadows
-static bool DeferredLightingEnabled = false;
-#else
 static bool DeferredLightingEnabled = true;
-#endif
 
 static void parse_deferred_lighting_func()
 {

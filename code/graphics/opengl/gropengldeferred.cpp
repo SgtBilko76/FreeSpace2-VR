@@ -30,6 +30,36 @@
 
 #include <math/bitarray.h>
 
+#ifdef USE_OPENGL_ES
+// GLES (Quest/Adreno) rejects glBlitFramebuffer between two attachments of the same framebuffer
+// with GL_INVALID_OPERATION, which dropped the background and the lit result. Copy with a
+// full-screen pass instead. GLES also only routes fragment output N to COLOR_ATTACHMENTn, so the
+// copy shader (output 0) draws through a helper framebuffer with the target at attachment 0.
+static GLuint deferred_copy_fbo = 0;
+
+static void deferred_copy_texture(GLuint src_texture, GLuint dst_texture)
+{
+	if (deferred_copy_fbo == 0) {
+		glGenFramebuffers(1, &deferred_copy_fbo);
+	}
+
+	GL_state.PushFramebufferState();
+	GL_state.BindFrameBuffer(deferred_copy_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst_texture, 0);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_COPY, 0));
+	GL_state.Texture.Enable(0, GL_TEXTURE_2D, src_texture);
+	Current_shader->program->Uniforms.setTextureUniform("tex", 0);
+	GL_state.SetAlphaBlendMode(gr_alpha_blend::ALPHA_BLEND_NONE);
+	GL_state.SetZbufferType(ZBUFFER_TYPE_NONE);
+	opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, 1.0f);
+
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+	GL_state.PopFramebufferState();
+}
+#endif
+
 void gr_opengl_deferred_init()
 {
 	gr_opengl_deferred_light_cylinder_init(16);
@@ -90,9 +120,13 @@ void gr_opengl_deferred_lighting_begin(bool clearNonColorBufs)
 	} else {
 		// Copy the existing color data into the emissive part of the G-buffer since everything that already existed is
 		// treated as emissive
+#ifdef USE_OPENGL_ES
+		deferred_copy_texture(Scene_color_texture, Scene_emissive_texture);
+#else
 		glDrawBuffer(GL_COLOR_ATTACHMENT4);
 		glReadBuffer(GL_COLOR_ATTACHMENT0);
 		glBlitFramebuffer(0, 0, gr_screen.max_w, gr_screen.max_h, 0, 0, gr_screen.max_w, gr_screen.max_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+#endif
 	}
 	
 	glDrawBuffers(6, buffers);
@@ -225,6 +259,11 @@ void gr_opengl_deferred_lighting_finish()
 		return;
 	}
 
+#ifdef USE_OPENGL_ES
+	// start the composite buffer from the emissive buffer (see deferred_copy_texture)
+	deferred_copy_texture(Scene_emissive_texture, Scene_composite_texture);
+#endif
+
 	GL_state.SetAlphaBlendMode(ALPHA_BLEND_ADDITIVE);
 	gr_zbuffer_set(GR_ZBUFF_NONE);
 
@@ -235,6 +274,7 @@ void gr_opengl_deferred_lighting_finish()
 	
 	// Render on top of the composite buffer texture
 	glDrawBuffer(GL_COLOR_ATTACHMENT5);
+#ifndef USE_OPENGL_ES
 	glReadBuffer(GL_COLOR_ATTACHMENT4);
 	glBlitFramebuffer(0,
 		0,
@@ -246,6 +286,7 @@ void gr_opengl_deferred_lighting_finish()
 		gr_screen.max_h,
 		GL_COLOR_BUFFER_BIT,
 		GL_NEAREST);
+#endif
 
 	GL_state.Texture.Enable(0, GL_TEXTURE_2D, Scene_color_texture);
 	GL_state.Texture.Enable(1, GL_TEXTURE_2D, Scene_normal_texture);
@@ -558,6 +599,10 @@ void gr_opengl_deferred_lighting_finish()
 		opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, 1.0f);
 
 		if (bDrawNebVolumetrics) {
+#ifdef USE_OPENGL_ES
+			deferred_copy_texture(Scene_color_texture, Scene_composite_texture);
+			glDrawBuffer(GL_COLOR_ATTACHMENT0);
+#else
 			glReadBuffer(GL_COLOR_ATTACHMENT0);
 			glDrawBuffer(GL_COLOR_ATTACHMENT5);
 			glBlitFramebuffer(0,
@@ -572,6 +617,7 @@ void gr_opengl_deferred_lighting_finish()
 				GL_NEAREST);
 			glDrawBuffer(GL_COLOR_ATTACHMENT0);
 			glReadBuffer(GL_COLOR_ATTACHMENT0);
+#endif
 		}
 		
 	} 
@@ -663,6 +709,9 @@ void gr_opengl_deferred_lighting_finish()
 	if(!bDrawFullNeb && !bDrawNebVolumetrics) {
 		// Transfer the resolved lighting back to the color texture
 		// TODO: Maybe this could be improved so that it doesn't require the copy back operation?
+#ifdef USE_OPENGL_ES
+		deferred_copy_texture(Scene_composite_texture, Scene_color_texture);
+#else
 		glReadBuffer(GL_COLOR_ATTACHMENT5);
 		glBlitFramebuffer(0,
 						  0,
@@ -675,6 +724,7 @@ void gr_opengl_deferred_lighting_finish()
 						  GL_COLOR_BUFFER_BIT,
 						  GL_NEAREST);
 		glReadBuffer(GL_COLOR_ATTACHMENT0);
+#endif
 	}
 
 	gr_set_proj_matrix(Proj_fov, gr_screen.clip_aspect, Min_draw_distance, Max_draw_distance);
