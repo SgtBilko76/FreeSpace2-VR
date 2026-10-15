@@ -596,7 +596,8 @@ bool gr_opengl_openxr_flip() {
 			vert_def.add_vertex_component(vertex_format_data::TEX_COORD2, sizeof(GLfloat) * 5, sizeof(GLfloat) * 3);
 
 			gr_matrix_set_uniforms();
-			gr_set_clear_color(20, 20, 20);
+			// black surroundings around the menu / cutscene screen
+			gr_set_clear_color(0, 0, 0);
 			gr_clear();
 			gr_set_clear_color(0, 0, 0);
 			opengl_render_primitives_immediate(PRIM_TYPE_TRIFAN, &vert_def, 4, v, sizeof(v));

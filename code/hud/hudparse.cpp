@@ -648,6 +648,13 @@ void parse_hud_gauges_tbl(const char *filename)
 
 			// Pruning time. Let's see if the current resolution defined by the user matches the conditions set by this entry
 			bool prune_config = false;
+#ifdef __ANDROID__
+			// Quest VR renders square eye images above the 4:3 layouts' usual $Max widths; pick the
+			// layout as if the screen were 1024 wide (the gauges are still scaled to the real size)
+			const int layout_w = std::min(gr_screen.max_w, 1024);
+#else
+			const int layout_w = gr_screen.max_w;
+#endif
 			if (optional_string("$Required Aspect:")) {
 				// filter aspect ratio.
 				if (optional_string("Full Screen")) {
@@ -667,7 +674,7 @@ void parse_hud_gauges_tbl(const char *filename)
 				int min_res[2];
 				stuff_int_list(min_res, 2, ParseLookupType::RAW_INTEGER_TYPE);
 
-				if (min_res[0] > gr_screen.max_w) {
+				if (min_res[0] > layout_w) {
 					prune_config = true;
 				}
 				else if (min_res[0] == gr_screen.center_w) {
@@ -682,7 +689,7 @@ void parse_hud_gauges_tbl(const char *filename)
 				int max_res[2];
 				stuff_int_list(max_res, 2, ParseLookupType::RAW_INTEGER_TYPE);
 
-				if (max_res[0] < gr_screen.max_w) {
+				if (max_res[0] < layout_w) {
 					prune_config = true;
 				}
 				else if (max_res[0] == gr_screen.center_w) {
