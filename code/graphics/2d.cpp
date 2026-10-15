@@ -834,7 +834,12 @@ static auto FramebufferEffectsOption __UNUSED = options::OptionBuilder<flagset<F
                      .parser(parse_framebuffer_func)
                      .finish();
 
+#ifdef __ANDROID__
+// Quest: GLES has no MSAA path in FSO, so smooth edges with post-process AA by default
+AntiAliasMode Gr_aa_mode = AntiAliasMode::FXAA_Medium;
+#else
 AntiAliasMode Gr_aa_mode = AntiAliasMode::None;
+#endif
 AntiAliasMode Gr_aa_mode_last_frame = AntiAliasMode::None;
 
 static void parse_anti_aliasing_func() {
