@@ -4261,8 +4261,14 @@ static bool Game_vr_hud_layer = false;
 // Shrinks the screen to the 4:3 HUD canvas (bottom rows of the back buffer) while the HUD
 // layer is drawn, the same way bm_set_render_target() resizes it for render targets: the
 // gauge layouts are 4:3 and would otherwise be stretched onto the square eye image.
+// The screen-scale globals FSO resizes 2D drawing with (graphics/2d.cpp); recomputed for the canvas
+// so menu-style UI (the death popup) and the text clipping it relies on match the canvas size
+extern float Gr_save_full_resize_Y, Gr_save_full_center_resize_Y, Gr_save_resize_Y;
+extern float Gr_save_menu_offset_Y, Gr_save_menu_zoomed_offset_Y;
+
 struct vr_hud_canvas {
 	int max_h, max_h_unscaled, max_h_unscaled_zoomed, center_h, center_offset_y;
+	float full_resize_y, full_center_resize_y, menu_offset_y, menu_zoomed_offset_y;
 	vr_hud_canvas()
 	{
 		max_h = gr_screen.max_h;
@@ -4270,6 +4276,10 @@ struct vr_hud_canvas {
 		max_h_unscaled_zoomed = gr_screen.max_h_unscaled_zoomed;
 		center_h = gr_screen.center_h;
 		center_offset_y = gr_screen.center_offset_y;
+		full_resize_y = Gr_save_full_resize_Y;
+		full_center_resize_y = Gr_save_full_center_resize_Y;
+		menu_offset_y = Gr_save_menu_offset_Y;
+		menu_zoomed_offset_y = Gr_save_menu_zoomed_offset_Y;
 
 		const int h = static_cast<int>(std::lround(gr_screen.max_w / OPENXR_QUEST_HUD_ASPECT));
 		gr_screen.max_h = h;
@@ -4277,9 +4287,12 @@ struct vr_hud_canvas {
 		gr_screen.max_h_unscaled_zoomed = static_cast<int>(std::lround(gr_screen.max_w_unscaled_zoomed / OPENXR_QUEST_HUD_ASPECT));
 		gr_screen.center_h = static_cast<int>(std::lround(gr_screen.center_w / OPENXR_QUEST_HUD_ASPECT));
 		gr_screen.center_offset_y = 0;
+
+		Gr_save_full_resize_Y = Gr_save_full_center_resize_Y = i2fl(h) / i2fl(gr_screen.max_h_unscaled);
+		Gr_save_menu_offset_Y = Gr_save_menu_zoomed_offset_Y = (i2fl(h) - i2fl(gr_screen.max_h_unscaled) * Gr_save_resize_Y) * 0.5f;
+		gr_reset_screen_scale();
 		gr_reset_clip();
 		gr_setup_viewport();
-		gr_reset_screen_scale();
 	}
 	~vr_hud_canvas()
 	{
@@ -4288,9 +4301,13 @@ struct vr_hud_canvas {
 		gr_screen.max_h_unscaled_zoomed = max_h_unscaled_zoomed;
 		gr_screen.center_h = center_h;
 		gr_screen.center_offset_y = center_offset_y;
+		Gr_save_full_resize_Y = full_resize_y;
+		Gr_save_full_center_resize_Y = full_center_resize_y;
+		Gr_save_menu_offset_Y = menu_offset_y;
+		Gr_save_menu_zoomed_offset_Y = menu_zoomed_offset_y;
+		gr_reset_screen_scale();
 		gr_reset_clip();
 		gr_setup_viewport();
-		gr_reset_screen_scale();
 	}
 };
 
@@ -4325,6 +4342,30 @@ static void game_render_vr_hud_layer()
 	gr_reset_clip();
 	game_show_time_left();
 	gr_reset_clip();
+
+	// the death popup goes on this layer too (drawn and processed once per frame, cockpit-fixed),
+	// with the mouse cursor the laser pointer drives (see openxr_quest_update)
+	if (popupdead_is_active()) {
+		// its retail layout sits at the bottom of the 1024x768 screen (y 581-775); in VR that is
+		// below the HUD canvas. Move it to the middle of the view by shifting the menu offset
+		// (drawing and mouse unscaling both use it, so clicks still line up).
+		const float saved_offset = Gr_save_menu_offset_Y, saved_zoomed = Gr_save_menu_zoomed_offset_Y;
+		const float popup_center_y = 678.0f; // middle of the dead popup in 1024x768 menu coordinates
+		Gr_save_menu_offset_Y = Gr_save_menu_zoomed_offset_Y = gr_screen.max_h * 0.5f - popup_center_y * Gr_save_resize_Y;
+		gr_reset_screen_scale();
+		game_maybe_do_dead_popup(flFrametime);
+		Gr_save_menu_offset_Y = saved_offset;
+		Gr_save_menu_zoomed_offset_Y = saved_zoomed;
+		gr_reset_screen_scale();
+		auto cursor = io::mouse::CursorManager::get()->getCurrentCursor();
+		if (popupdead_is_active() && cursor != nullptr) {
+			int mx, my;
+			mouse_get_pos(&mx, &my);
+			gr_set_bitmap(cursor->getBitmapHandle());
+			gr_bitmap(mx, my, GR_RESIZE_NONE);
+		}
+		gr_reset_clip();
+	}
 }
 #endif
 
@@ -4395,8 +4436,10 @@ void game_do_full_frame(DEBUG_TIMER_SIG const vec3d* offset = nullptr, const mat
 
 	DEBUG_GET_TIME(render2_time2)
 
-	// maybe render and process the dead popup
-	game_maybe_do_dead_popup(flFrametime);
+	// maybe render and process the dead popup (Quest: on the HUD layer instead)
+	if (!Game_vr_hud_layer) {
+		game_maybe_do_dead_popup(flFrametime);
+	}
 
 	// If a regular popup is active, don't flip (popup code flips)
 	if (!popup_running_state()) {

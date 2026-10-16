@@ -25,6 +25,11 @@ float openxr_quest_hud_half_fov();
 // The HUD is drawn on a 4:3 canvas (the aspect its gauge layouts are made for), so gauges and
 // the crosshair keep their shape: width = eye render width, height = width / this aspect
 constexpr float OPENXR_QUEST_HUD_ASPECT = 4.0f / 3.0f;
+// Distance (metres) of the HUD layer in front of the recentred head; far enough that head
+// movement and eye convergence barely shift the reticle against distant targets
+constexpr float OPENXR_QUEST_HUD_DISTANCE = 10.0f;
+// While the death popup is up in flight it is drawn on the HUD layer (once, cockpit-fixed) and
+// the laser pointer aims at that layer; mouse coordinates are then in HUD canvas pixels.
 
 // Name of the virtual gamepad (used to auto-select it as Joystick 0)
 extern const char* const OPENXR_QUEST_PAD_NAME;

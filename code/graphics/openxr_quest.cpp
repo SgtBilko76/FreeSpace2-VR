@@ -18,6 +18,7 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 #include "io/key.h"
 #include "io/mouse.h"
 #include "playerman/player.h"
+#include "popup/popupdead.h"
 
 #define QLOG(...) __android_log_print(ANDROID_LOG_INFO, "WCSagaVR", __VA_ARGS__)
 
@@ -217,6 +218,47 @@ bool pointerHit(int hand, float& mx, float& my)
 	return true;
 }
 
+// Same for the cockpit-fixed HUD layer (a 4:3 quad OPENXR_QUEST_HUD_DISTANCE ahead, centred on
+// the recentred head); returns HUD canvas pixels (max_w x max_w / OPENXR_QUEST_HUD_ASPECT)
+bool pointerHitHud(int hand, float& mx, float& my)
+{
+	if (aimSpace[hand] == XR_NULL_HANDLE)
+		return false;
+	XrSpaceLocation loc{ XR_TYPE_SPACE_LOCATION };
+	if (xrLocateSpace(aimSpace[hand], xr_space, xr_state.predictedDisplayTime, &loc) != XR_SUCCESS)
+		return false;
+	const XrSpaceLocationFlags need = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+	if ((loc.locationFlags & need) != need)
+		return false;
+
+	XrVector3f d = rotate(loc.pose.orientation, XrVector3f{ 0.0f, 0.0f, -1.0f });
+	const float px = loc.pose.position.x - xr_offset.xyz.x;
+	const float py = loc.pose.position.y - xr_offset.xyz.y;
+	const float pz = -loc.pose.position.z - xr_offset.xyz.z;
+	const float dx = d.x, dy = d.y, dz = -d.z;
+	if (dz < 0.05f)
+		return false;
+
+	const float D = OPENXR_QUEST_HUD_DISTANCE;
+	const float t = (D - pz) / dz;
+	const float hx = px + t * dx;
+	const float hy = py + t * dy;
+
+	const float tV = std::tan(openxr_quest_hud_half_fov());
+	const float tH = tV * OPENXR_QUEST_HUD_ASPECT;
+	if (tV <= 0.0f)
+		return false;
+	const float u = (hx / (D * tH) + 1.0f) * 0.5f;
+	const float v = (1.0f - hy / (D * tV)) * 0.5f;
+	if (u < -0.1f || u > 1.1f || v < -0.1f || v > 1.1f)
+		return false;
+
+	const float canvas_h = std::round(gr_screen.max_w / OPENXR_QUEST_HUD_ASPECT);
+	mx = std::max(0.0f, std::min(1.0f, u)) * (gr_screen.max_w - 1);
+	my = std::max(0.0f, std::min(1.0f, v)) * (canvas_h - 1);
+	return true;
+}
+
 } // namespace
 
 bool hasPerfSettings = false;
@@ -368,7 +410,10 @@ void openxr_quest_update(bool stereo_frame)
 		pressKey(KEY_ESC);
 	prevMenu = menu;
 
-	if (stereo_frame) {
+	// death popup in flight: it is on the HUD layer, so point at that instead of flying
+	const bool hudPointer = stereo_frame && popupdead_is_active();
+
+	if (stereo_frame && !hudPointer) {
 		// Flight: Touch -> virtual gamepad. Bindings: controlconfig (control_config_quest_touch_defaults)
 		const float now = static_cast<float>(SDL_GetTicks()) / 1000.0f;
 		if (lastUpdateSeconds < 0.0f && Player) {
@@ -458,7 +503,7 @@ void openxr_quest_update(bool stereo_frame)
 			pointerHand = RIGHT;
 
 		float mx, my;
-		if (pointerHit(pointerHand, mx, my))
+		if (hudPointer ? pointerHitHud(pointerHand, mx, my) : pointerHit(pointerHand, mx, my))
 			mouse_event(mx, my, 0.0f, 0.0f);
 
 		const bool down = std::max(trigL, trigR) > (prevTrigger ? 0.4f : 0.6f);

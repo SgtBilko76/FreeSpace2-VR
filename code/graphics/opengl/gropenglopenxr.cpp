@@ -364,9 +364,7 @@ static XrSwapchain xr_hud_swapchain = XR_NULL_HANDLE;
 static SCP_vector<XrSwapchainImageGL> xr_hud_images;
 static uint32_t xr_hud_w = 0, xr_hud_h = 0;
 static bool xr_hud_ready = false; // the HUD image was written for the current frame
-// Far enough that head movement and eye convergence barely shift the reticle against
-// distant targets; the angular size does not depend on it.
-static constexpr float XR_HUD_DISTANCE = 10.0f; // metres
+static constexpr float XR_HUD_DISTANCE = OPENXR_QUEST_HUD_DISTANCE; // metres
 
 // Half vertical field of view (radians) of the symmetric camera the HUD is drawn with. FSO's
 // 2D projection (reticle at the image centre, target brackets, lead indicators) only matches
