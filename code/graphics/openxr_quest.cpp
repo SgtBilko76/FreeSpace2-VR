@@ -15,8 +15,10 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
 
 #include "graphics/2d.h"
+#include "graphics/openxr_quest_keyboard.h"
 #include "io/key.h"
 #include "io/mouse.h"
+#include "osapi/osapi.h"
 #include "playerman/player.h"
 #include "popup/popupdead.h"
 
@@ -53,6 +55,19 @@ float throttleLever = 0.0f;
 bool prevShiftStickUp = false, prevShiftStickDown = false;
 bool prevCommsUp = false, prevCommsDown = false;
 float lastUpdateSeconds = -1.0f;
+
+// Virtual keyboard (shown below the menu screen while a text field has focus)
+static_assert(OPENXR_QUEST_KB_W == VR_KB_WIDTH_PX && OPENXR_QUEST_KB_H == VR_KB_HEIGHT_PX, "keyboard image size");
+Uint64 textFieldMs = 0;       // last frame a focused text input box was processed
+bool kbVisible = false;
+bool kbDirty = true;          // image must be redrawn
+VrKeyboard kb;
+XrVector3f kbPos{ 0.0f, 0.0f, 0.0f };
+XrQuaternionf kbQuat{ 0.0f, 0.0f, 0.0f, 1.0f };
+float kbW = 1.1f, kbH = 1.1f * VR_KB_HEIGHT_PX / VR_KB_WIDTH_PX;
+bool kbTrig[2] = { false, false };    // trigger state per hand (with hysteresis)
+bool kbHeld[2] = { false, false };    // this trigger press started on the keyboard
+Uint64 kbRepeatMs = 0;                // next Backspace repeat
 
 XrPath path(const char* s)
 {
@@ -259,7 +274,156 @@ bool pointerHitHud(int hand, float& mx, float& my)
 	return true;
 }
 
+XrQuaternionf conjugate(const XrQuaternionf& q)
+{
+	return XrQuaternionf{ -q.x, -q.y, -q.z, q.w };
+}
+
+// Desk-like keyboard quad: 1.4 m ahead of and 0.55 m below the recentred head, tilted
+// 35 degrees toward the player. App-space (OpenXR) coordinates; xr_offset is in FSO axes.
+void keyboardPlace()
+{
+	kbPos = XrVector3f{ xr_offset.xyz.x, xr_offset.xyz.y - 0.55f, -xr_offset.xyz.z - 1.4f };
+	const float half = -35.0f * 0.5f * 3.14159265f / 180.0f;
+	kbQuat = XrQuaternionf{ std::sin(half), 0.0f, 0.0f, std::cos(half) };
+}
+
+// Aim ray of `hand` against the keyboard quad; u/v in 0..1 (v down)
+bool keyboardHit(int hand, float& u, float& v)
+{
+	if (aimSpace[hand] == XR_NULL_HANDLE)
+		return false;
+	XrSpaceLocation loc{ XR_TYPE_SPACE_LOCATION };
+	if (xrLocateSpace(aimSpace[hand], xr_space, xr_state.predictedDisplayTime, &loc) != XR_SUCCESS)
+		return false;
+	const XrSpaceLocationFlags need = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+	if ((loc.locationFlags & need) != need)
+		return false;
+
+	const XrQuaternionf inv = conjugate(kbQuat);
+	const XrVector3f o = rotate(inv, XrVector3f{ loc.pose.position.x - kbPos.x, loc.pose.position.y - kbPos.y, loc.pose.position.z - kbPos.z });
+	const XrVector3f d = rotate(inv, rotate(loc.pose.orientation, XrVector3f{ 0.0f, 0.0f, -1.0f }));
+	if (d.z > -0.05f) // must point into the front face
+		return false;
+	const float t = -o.z / d.z;
+	if (t <= 0.0f)
+		return false;
+	u = (o.x + t * d.x) / kbW + 0.5f;
+	v = 0.5f - (o.y + t * d.y) / kbH;
+	return u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f;
+}
+
+void typeText(const char* text)
+{
+	// static strings from the keyboard layout, so SDL may keep the pointer
+	SDL_Event e{};
+	e.type = SDL_EVENT_TEXT_INPUT;
+	e.text.windowID = SDL_GetWindowID(os::getSDLMainWindow());
+	e.text.text = text;
+	SDL_PushEvent(&e);
+}
+
+void keyboardPress(int key, Uint64 now)
+{
+	const VrKeyKind kind = VrKeyboard_KeyKind(key);
+	const char* text = VrKeyboard_Press(&kb, key, now);
+	if (kind == VR_KEY_KIND_BACKSPACE) {
+		pressKey(KEY_BACKSP);
+		kbRepeatMs = now + 450;
+	} else if (kind == VR_KEY_KIND_ENTER) {
+		pressKey(KEY_ENTER);
+	} else if (text) {
+		typeText(text);
+	}
+	kbDirty = true;
+}
+
+// Menus: show/hide the keyboard, hover, typing. onKb[h] = that hand's ray is on the keyboard;
+// held[h] = that hand's trigger press belongs to the keyboard (no mouse click for it).
+void keyboardUpdate(float trigL, float trigR, bool onKb[2])
+{
+	const Uint64 now = SDL_GetTicks();
+	const bool want = textFieldMs != 0 && now - textFieldMs < 300;
+	if (want && !kbVisible) {
+		VrKeyboard_Reset(&kb);
+		keyboardPlace();
+		kbDirty = true;
+		QLOG("virtual keyboard shown");
+	} else if (!want && kbVisible) {
+		QLOG("virtual keyboard hidden");
+	}
+	kbVisible = want;
+
+	const float trig[2] = { trigL, trigR };
+	for (int h = 0; h < 2; h++) {
+		int hover = VR_KB_NO_KEY;
+		float u, v;
+		onKb[h] = kbVisible && keyboardHit(h, u, v);
+		if (onKb[h])
+			hover = VrKeyboard_KeyAt(u, v);
+		if (hover != kb.hover[h]) {
+			kb.hover[h] = hover;
+			kbDirty = true;
+		}
+
+		const bool down = trig[h] > (kbTrig[h] ? 0.4f : 0.6f);
+		if (down && !kbTrig[h]) {
+			kbHeld[h] = onKb[h];
+			if (onKb[h] && hover != VR_KB_NO_KEY)
+				keyboardPress(hover, now);
+		} else if (!down) {
+			kbHeld[h] = false;
+		}
+		kbTrig[h] = down;
+
+		// hold Backspace to keep deleting
+		if (down && kbHeld[h] && hover != VR_KB_NO_KEY && VrKeyboard_KeyKind(hover) == VR_KEY_KIND_BACKSPACE && now >= kbRepeatMs) {
+			pressKey(KEY_BACKSP);
+			kbRepeatMs = now + 70;
+		}
+	}
+
+	if (kb.flash_key != VR_KB_NO_KEY && now >= kb.flash_until_ms) {
+		kb.flash_key = VR_KB_NO_KEY;
+		kbDirty = true;
+	}
+}
+
 } // namespace
+
+void openxr_quest_text_field_active()
+{
+	textFieldMs = SDL_GetTicks();
+	if (textFieldMs == 0)
+		textFieldMs = 1;
+}
+
+bool openxr_quest_keyboard_visible()
+{
+	return kbVisible;
+}
+
+bool openxr_quest_keyboard_render(uint8_t* rgba)
+{
+	if (!kbDirty)
+		return false;
+	VrKeyboard_Render(&kb, rgba, 0, SDL_GetTicks());
+	kbDirty = false;
+	return true;
+}
+
+void openxr_quest_keyboard_pose(float pos[3], float quat[4], float size[2])
+{
+	pos[0] = kbPos.x;
+	pos[1] = kbPos.y;
+	pos[2] = kbPos.z;
+	quat[0] = kbQuat.x;
+	quat[1] = kbQuat.y;
+	quat[2] = kbQuat.z;
+	quat[3] = kbQuat.w;
+	size[0] = kbW;
+	size[1] = kbH;
+}
 
 bool hasPerfSettings = false;
 
@@ -491,6 +655,7 @@ void openxr_quest_update(bool stereo_frame)
 			mouse_mark_button(MOUSE_LEFT_BUTTON, 0);
 			prevTrigger = false;
 		}
+		kbVisible = false;
 	} else {
 		// Menus: neutral pad, laser pointer drives the mouse
 		lastUpdateSeconds = -1.0f;
@@ -502,11 +667,19 @@ void openxr_quest_update(bool stereo_frame)
 		else if (trigR > 0.6f && trigL < 0.3f)
 			pointerHand = RIGHT;
 
+		// virtual keyboard first: a ray on the keyboard neither moves the mouse nor clicks
+		bool onKb[2] = { false, false };
+		if (hudPointer)
+			kbVisible = false;
+		else
+			keyboardUpdate(trigL, trigR, onKb);
+
 		float mx, my;
-		if (hudPointer ? pointerHitHud(pointerHand, mx, my) : pointerHit(pointerHand, mx, my))
+		if (!onKb[pointerHand] && (hudPointer ? pointerHitHud(pointerHand, mx, my) : pointerHit(pointerHand, mx, my)))
 			mouse_event(mx, my, 0.0f, 0.0f);
 
-		const bool down = std::max(trigL, trigR) > (prevTrigger ? 0.4f : 0.6f);
+		const float mouseTrig = std::max(kbHeld[LEFT] ? 0.0f : trigL, kbHeld[RIGHT] ? 0.0f : trigR);
+		const bool down = mouseTrig > (prevTrigger ? 0.4f : 0.6f);
 		if (down != prevTrigger)
 			mouse_mark_button(MOUSE_LEFT_BUTTON, down ? 1 : 0);
 		prevTrigger = down;
@@ -529,5 +702,9 @@ void openxr_quest_hud_end() {}
 void openxr_quest_init() {}
 void openxr_quest_close() {}
 void openxr_quest_update(bool) {}
+void openxr_quest_text_field_active() {}
+bool openxr_quest_keyboard_visible() { return false; }
+bool openxr_quest_keyboard_render(uint8_t*) { return false; }
+void openxr_quest_keyboard_pose(float[3], float[4], float[2]) {}
 
 #endif

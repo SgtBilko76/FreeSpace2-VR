@@ -17,6 +17,7 @@
 #include "ui/ui.h"
 #include "ui/uidefs.h"
 #include "gamesnd/gamesnd.h"
+#include "graphics/openxr_quest.h"
 
 
 
@@ -325,8 +326,11 @@ void UI_INPUTBOX::process(int focus)
 	if (disabled_flag)
 		return;
 
-	if (my_wnd->selected_gadget == this)
+	if (my_wnd->selected_gadget == this) {
 		focus = 1;
+		// Quest: shows the VR keyboard while this box has focus
+		openxr_quest_text_field_active();
+	}
 
 	key_used = 0;
 	changed_flag = 0;

@@ -480,6 +480,9 @@ add_file_folder("Graphics"
 	graphics/openxr_internal.h
 	graphics/openxr_quest.cpp
 	graphics/openxr_quest.h
+	graphics/openxr_quest_keyboard.cpp
+	graphics/openxr_quest_keyboard.h
+	graphics/openxr_quest_keyboard_font.h
 	graphics/post_processing.cpp
 	graphics/post_processing.h
 	graphics/render.cpp

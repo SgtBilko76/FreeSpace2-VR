@@ -31,5 +31,19 @@ constexpr float OPENXR_QUEST_HUD_DISTANCE = 10.0f;
 // While the death popup is up in flight it is drawn on the HUD layer (once, cockpit-fixed) and
 // the laser pointer aims at that layer; mouse coordinates are then in HUD canvas pixels.
 
+// Virtual keyboard (menus): Android's system keyboard never shows in an immersive OpenXR app,
+// so a laser keyboard quad is shown below the menu screen while a text field has focus.
+// Call every frame a focused text input box is processed (pilot callsign, chat, ...).
+void openxr_quest_text_field_active();
+// Keyboard state for the compositor (gropenglopenxr.cpp)
+bool openxr_quest_keyboard_visible();
+// Redraws the keyboard image (OPENXR_QUEST_KB_W x OPENXR_QUEST_KB_H, RGBA8, premultiplied,
+// top row first) when it changed; returns false when the last image is still current
+bool openxr_quest_keyboard_render(uint8_t* rgba);
+// Quad pose in the OpenXR app space: centre (x, y, z), orientation quaternion (x, y, z, w), size (w, h)
+void openxr_quest_keyboard_pose(float pos[3], float quat[4], float size[2]);
+constexpr int OPENXR_QUEST_KB_W = 1280;
+constexpr int OPENXR_QUEST_KB_H = 496;
+
 // Name of the virtual gamepad (used to auto-select it as Joystick 0)
 extern const char* const OPENXR_QUEST_PAD_NAME;

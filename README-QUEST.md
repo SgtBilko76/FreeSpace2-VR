@@ -33,6 +33,9 @@ Menus, briefings and cutscenes are shown on a large screen in front of you.
 | A | Enter |
 | B / left Menu button | Escape (back / pause) |
 
+Text fields (pilot callsign, chat): a keyboard appears below the menu screen while the
+field is active; point at a key and pull the trigger. Hold Back to keep deleting.
+
 Flight (the Touch controllers act as one gamepad; every binding can be changed
 in Options > Controls, "Reset to default" restores this layout):
 

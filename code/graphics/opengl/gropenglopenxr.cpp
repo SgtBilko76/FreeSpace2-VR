@@ -479,6 +479,96 @@ static XrCompositionLayerQuad openxr_hud_layer() {
 	quad.size = XrExtent2Df{ D * (tL + tR), D * (tU + tD) };
 	return quad;
 }
+
+// ---- Quest: virtual keyboard layer (menus, while a text field has focus) -----------------
+static XrSwapchain xr_kb_swapchain = XR_NULL_HANDLE;
+static SCP_vector<XrSwapchainImageGL> xr_kb_images;
+static bool xr_kb_create_failed = false;
+static bool xr_kb_uploaded = false; // an image was released since the keyboard opened
+static SCP_vector<uint8_t> xr_kb_pixels;
+
+static bool openxr_create_kb_swapchain() {
+	XrSwapchainCreateInfo info{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
+	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+	info.format = xr_swapchains[0]->format;
+	info.sampleCount = 1;
+	info.width = OPENXR_QUEST_KB_W;
+	info.height = OPENXR_QUEST_KB_H;
+	info.faceCount = 1;
+	info.arraySize = 1;
+	info.mipCount = 1;
+	if (xrCreateSwapchain(xr_session, &info, &xr_kb_swapchain) != XR_SUCCESS) {
+		mprintf(("OpenXR: could not create the keyboard swapchain\n"));
+		xr_kb_swapchain = XR_NULL_HANDLE;
+		xr_kb_create_failed = true;
+		return false;
+	}
+	uint32_t count = 0;
+	xrEnumerateSwapchainImages(xr_kb_swapchain, 0, &count, nullptr);
+	xr_kb_images.assign(count, XrSwapchainImageGL{ XR_TYPE_SWAPCHAIN_IMAGE_GL, nullptr, 0 });
+	xrEnumerateSwapchainImages(xr_kb_swapchain, count, &count, (XrSwapchainImageBaseHeader*)xr_kb_images.data());
+	xr_kb_pixels.resize(static_cast<size_t>(OPENXR_QUEST_KB_W) * OPENXR_QUEST_KB_H * 4);
+	mprintf(("OpenXR: keyboard layer %dx%d, %u images\n", OPENXR_QUEST_KB_W, OPENXR_QUEST_KB_H, count));
+	return true;
+}
+
+// Uploads the keyboard image when it changed; returns true when the layer can be submitted
+static bool openxr_update_kb_layer() {
+	if (!openxr_quest_keyboard_visible()) {
+		xr_kb_uploaded = false;
+		return false;
+	}
+	if (xr_kb_swapchain == XR_NULL_HANDLE && (xr_kb_create_failed || !openxr_create_kb_swapchain()))
+		return false;
+	if (!xr_kb_uploaded)
+		openxr_quest_keyboard_render(xr_kb_pixels.data()); // fresh image for a new keyboard
+	else if (!openxr_quest_keyboard_render(xr_kb_pixels.data()))
+		return true; // the last released image is still current
+
+	uint32_t index = 0;
+	XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+	if (xrAcquireSwapchainImage(xr_kb_swapchain, &acquireInfo, &index) != XR_SUCCESS)
+		return xr_kb_uploaded;
+	XrSwapchainImageWaitInfo waitInfo{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, nullptr, XR_INFINITE_DURATION };
+	xrWaitSwapchainImage(xr_kb_swapchain, &waitInfo);
+
+	// GL textures are bottom-up: upload the rows of the top-down image in reverse order
+	GLint prevActive = 0, prevTex = 0, prevUnpack = 0, prevAlign = 0;
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActive);
+	glActiveTexture(GL_TEXTURE0);
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex);
+	glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &prevUnpack);
+	glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevAlign);
+	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+	glBindTexture(GL_TEXTURE_2D, xr_kb_images[index].image);
+	const size_t row = static_cast<size_t>(OPENXR_QUEST_KB_W) * 4;
+	for (int y = 0; y < OPENXR_QUEST_KB_H; y++)
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, OPENXR_QUEST_KB_H - 1 - y, OPENXR_QUEST_KB_W, 1, GL_RGBA, GL_UNSIGNED_BYTE, xr_kb_pixels.data() + row * y);
+	glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prevTex));
+	glPixelStorei(GL_UNPACK_ALIGNMENT, prevAlign);
+	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, static_cast<GLuint>(prevUnpack));
+	glActiveTexture(static_cast<GLenum>(prevActive));
+
+	XrSwapchainImageReleaseInfo releaseInfo{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+	xrReleaseSwapchainImage(xr_kb_swapchain, &releaseInfo);
+	xr_kb_uploaded = true;
+	return true;
+}
+
+static XrCompositionLayerQuad openxr_kb_layer() {
+	float pos[3], quat[4], size[2];
+	openxr_quest_keyboard_pose(pos, quat, size);
+	XrCompositionLayerQuad quad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
+	quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+	quad.space = xr_space;
+	quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+	quad.subImage = { xr_kb_swapchain, { { 0, 0 }, { OPENXR_QUEST_KB_W, OPENXR_QUEST_KB_H } }, 0 };
+	quad.pose.orientation = XrQuaternionf{ quat[0], quat[1], quat[2], quat[3] };
+	quad.pose.position = XrVector3f{ pos[0], pos[1], pos[2] };
+	quad.size = XrExtent2Df{ size[0], size[1] };
+	return quad;
+}
 #endif
 
 bool gr_opengl_openxr_flip() {
@@ -721,14 +811,18 @@ bool gr_opengl_openxr_flip() {
 	};
 	auto pLayer = (const XrCompositionLayerBaseHeader*)&layer;
 #ifdef __ANDROID__
-	XrCompositionLayerQuad hudQuad{};
-	const XrCompositionLayerBaseHeader* layers[2] = { pLayer, nullptr };
+	XrCompositionLayerQuad hudQuad{}, kbQuad{};
+	const XrCompositionLayerBaseHeader* layers[3] = { pLayer, nullptr, nullptr };
 	uint32_t layerCount = 1;
 	if (xr_hud_ready) {
 		hudQuad = openxr_hud_layer();
 		layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&hudQuad;
 	}
 	xr_hud_ready = false;
+	if (openxr_update_kb_layer()) {
+		kbQuad = openxr_kb_layer();
+		layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&kbQuad;
+	}
 #endif
 
 	XrFrameEndInfo frameEndInfo {
