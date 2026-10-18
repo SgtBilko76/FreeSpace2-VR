@@ -93,12 +93,18 @@ ubyte g3_transfer_vertex(vertex *dest, const vec3d *src)
 
 static void g3_compensate_asymmetric_fov(float& x, float& y, float z) {
 	if (std::holds_alternative<asymmetric_fov>(Proj_fov)) {
+		// Map the point into the asymmetric frustum exactly like the GPU projection matrix
+		// (gr_set_proj_matrix) does, so CPU-projected things (stars, ...) line up with the
+		// rendered scene in both eyes. x and y come in pre-scaled by Matrix_scale
+		// (symmetric frustum of the same horizontal FOV); g3_project_vertex() maps x/z and
+		// y/z = -1..1 onto the canvas.
 		const auto& afov = std::get<asymmetric_fov>(Proj_fov);
-		float angle = atan2_safe(z, x) + (afov.left + afov.right);
-		x = angle == PI_2 ? 0.0f : z / tanf(angle);
-
-		angle = atan2_safe(z, y) + (afov.up + afov.down);
-		y = angle == PI_2 ? 0.0f : z / tanf(angle);
+		const float tl = tanf(afov.left), tr = tanf(afov.right);
+		const float tu = tanf(afov.up), td = tanf(afov.down);
+		const float ux = x / Matrix_scale.xyz.x; // = tan(angle) * z
+		const float uy = y / Matrix_scale.xyz.y;
+		x = (2.0f * ux - (tr + tl) * z) / (tr - tl);
+		y = (2.0f * uy - (tu + td) * z) / (tu - td);
 	}
 }
 

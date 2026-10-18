@@ -2686,7 +2686,23 @@ int button_function(int n)
 
 			// target the next hostile target
 			case TARGET_NEXT_CLOSEST_HOSTILE:
+#ifdef __ANDROID__
+				// Quest (A button): with no enemy to pick, target the next ship instead, so the
+				// button also works in training and among friendlies
+				{
+					const int before = Player_ai->target_objnum;
+					hud_target_next_list(1, 1, -1, -1, FALSE);
+					const int now = Player_ai->target_objnum;
+					const bool hostile = now >= 0 && Objects[now].type == OBJ_SHIP
+						&& iff_x_attacks_y(Player_ship->team, Ships[Objects[now].instance].team);
+					if (now == before && !hostile) {
+						hud_target_next();
+						control_used(TARGET_NEXT); // counts as "T" for training directives
+					}
+				}
+#else
 				hud_target_next_list(1,1);
+#endif
 				break;
 
 			// target the previous closest hostile

@@ -1,26 +1,29 @@
-# Wing Commander Saga VR (Meta Quest)
+# FreeSpace 2 VR (Meta Quest)
 
-Wing Commander Saga running natively on the Meta Quest 3, built on the
+FreeSpace 2 running natively on the Meta Quest 3, built on the
 [FreeSpace Open](https://github.com/scp-fs2open/fs2open.github.com) engine with
-OpenXR on OpenGL ES. Branch: `quest-vr`.
+OpenXR on OpenGL ES. Branch: `fs2-vr`.
 
-Wing Commander Saga is a free fan game. The APK contains only the engine; the
-game data (about 7 GB) is downloaded separately.
+The APK contains only the engine. You need your own copy of FreeSpace 2
+([GOG](https://www.gog.com/game/freespace_2) or
+[Steam](https://store.steampowered.com/app/273620/Freespace_2/)); its game files
+(about 1.8 GB) go on the headset.
 
 ## Install
 
-1. Install `WCSaga-VR-<version>.apk` with SideQuest or `adb install -r -g`.
-2. Put the Wing Commander Saga 0.9.65 game data on the headset so that this
-   folder exists: `/sdcard/WCSaga/Wing_Commander_Saga/data`
-   - Easiest: on a PC with Python 3 and 7-Zip, with the Quest connected by USB:
-     `python3 tools/quest/get_wcs_data.py WCSaga --push`
-     (downloads about 3.7 GB from the FSNebula mod repository, checks it,
-     unpacks it and copies it to the Quest).
-   - Or, on a Windows PC: download the full game and patch v1.1.0.7822 from
-     [wcsaga.com](https://www.wcsaga.com/downloads/), install the game, then the
-     patch, and copy the whole installed game folder to
-     `/sdcard/WCSaga/Wing_Commander_Saga` with SideQuest.
-3. Start **Wing Commander Saga VR** from *Unknown Sources* and allow
+1. Install `FreeSpace2-VR-<version>.apk` with SideQuest or `adb install -r -g`.
+2. Copy the game files to the folder `/sdcard/FS2` on the headset:
+   - From an installed game (GOG or Steam install folder on your PC): copy all
+     `.vp` files (`root_fs2.vp`, `smarty_fs2.vp`, `sparky_fs2.vp`,
+     `sparky_hi_fs2.vp`, `stu_fs2.vp`, `tango1_fs2.vp`, `tango2_fs2.vp`,
+     `tango3_fs2.vp`, `warble_fs2.vp`) and the folders `data2` and `data3`
+     (cutscenes) to `/sdcard/FS2` with SideQuest. The app moves the cutscenes
+     into place on the first start.
+   - Or, on a PC with Python 3 and the Quest connected by USB:
+     `python3 tools/quest/get_fs2_data.py <game folder or GOG setup_freespace_2_*.exe> --push`
+     (the GOG offline installer is unpacked with
+     [innoextract](https://constexpr.org/innoextract/)).
+3. Start **FreeSpace 2 VR** from *Unknown Sources* and allow
    "access to all files" when asked.
 
 ## Controls
@@ -32,6 +35,7 @@ Menus, briefings and cutscenes are shown on a large screen in front of you.
 | Laser (either controller) + trigger | Click |
 | A | Enter |
 | B / left Menu button | Escape (back / pause) |
+| A, B, Menu or trigger during a cutscene | Skip it |
 
 Text fields (pilot callsign, chat): a keyboard appears below the menu screen while the
 field is active; point at a key and pull the trigger. Hold Back to keep deleting.
@@ -49,7 +53,7 @@ in Options > Controls, "Reset to default" restores this layout):
 | Right trigger | Guns |
 | Left trigger | Missiles |
 | Right grip (hold) | Afterburner |
-| A | Target nearest enemy |
+| A | Target nearest enemy (next ship if there is no enemy) |
 | B | Target ship in crosshair |
 | X | Next missile type |
 | Y | Next gun type |
@@ -74,5 +78,5 @@ Linux host with the Android SDK/NDK: `tools/quest/build_apk.sh --install`.
 ## License
 
 The FreeSpace Open engine is released under the Volition source code license
-(non-commercial use only); see `Copying.md`. Wing Commander is a trademark of
-Electronic Arts; Wing Commander Saga is a non-commercial fan project.
+(non-commercial use only); see `Copying.md`. FreeSpace 2 game data is not
+included; you need your own copy of the game.

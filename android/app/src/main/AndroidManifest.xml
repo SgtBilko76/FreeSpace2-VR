@@ -24,7 +24,7 @@
             <action android:name="org.khronos.openxr.OpenXRApiLayerService" />
         </intent>
     </queries>
-    <!-- Wing Commander Saga data lives in /sdcard/WCSaga. -->
+    <!-- FreeSpace 2 data lives in /sdcard/FS2. -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
@@ -42,7 +42,7 @@
 
         <!-- Immersive OpenXR app (FSO -vr mode). -->
         <activity
-            android:name="com.bilko.wcsagavr.WCSagaActivity"
+            android:name="com.bilko.fs2vr.FS2Activity"
             android:label="@string/app_name"
             android:exported="true"
             android:launchMode="singleTask"

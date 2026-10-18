@@ -28,6 +28,7 @@
 #include "tracing/tracing.h"
 #include "io/timer.h"
 #include "io/key.h"
+#include "io/mouse.h"
 #include "mod_table/mod_table.h"
 #include "network/multi.h"
 #include "scripting/global_hooks.h"
@@ -226,6 +227,12 @@ void movie_display_loop(Player* player, PlaybackState* state) {
 	auto fpsCapSave = Cmdline_NoFPSCap;
 	Cmdline_NoFPSCap = 1;
 
+#ifdef __ANDROID__
+	// drop the click/key that started the movie (e.g. from the tech room) so it doesn't skip it
+	key_flush();
+	mouse_down_count(MOUSE_LEFT_BUTTON);
+#endif
+
 	auto lastDisplayTime = timer_get_microseconds();
 	while (state->playing) {
 		TRACE_SCOPE(tracing::CutsceneStep);
@@ -243,6 +250,17 @@ void movie_display_loop(Player* player, PlaybackState* state) {
 		}
 
 		processEvents();
+
+#ifdef __ANDROID__
+		// Quest: the controller buttons go into the key queue (not SDL key events) and the
+		// trigger clicks the mouse; either one skips the movie like Esc/Enter/Space
+		{
+			const int k = key_inkey();
+			if (k == KEY_ESC || k == KEY_ENTER || k == KEY_PADENTER || k == KEY_SPACEBAR
+				|| mouse_down_count(MOUSE_LEFT_BUTTON) > 0)
+				state->playing = false;
+		}
+#endif
 
 		// NOTE: This does not update mission time! If movies get enabled in places
 		//       other than through cutscenes then some refactoring should be done

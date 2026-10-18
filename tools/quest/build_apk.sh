@@ -2,6 +2,7 @@
 # Build the FSO Android engine, stage its libraries and package the Quest APK.
 #   tools/quest/build_apk.sh [--install] [--run]
 set -euo pipefail
+source "$(cd "$(dirname "$0")" && pwd)/game.sh"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 NDK="${ANDROID_NDK_HOME:-$HOME/Android/Sdk/ndk/29.0.14206865}"
 ADB="${ADB:-$HOME/Android/Sdk/platform-tools/adb}"
@@ -34,7 +35,7 @@ rm -rf "$OUT/jniLibs"; mkdir -p "$OUT/jniLibs/arm64-v8a"
 STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 for so in "$B"/bin/*.so; do "$STRIP" --strip-unneeded -o "$OUT/jniLibs/arm64-v8a/$(basename "$so")" "$so"; done
 ENGINE="$(basename "$(ls "$B"/bin/libfs2_open_*.so | head -1)" .so)"; ENGINE="${ENGINE#lib}"
-sed -i "s/ENGINE = \".*\"/ENGINE = \"$ENGINE\"/" "$ROOT/android/app/src/main/java/com/bilko/wcsagavr/BuildConfigLib.java"
+sed -i "s/ENGINE = \".*\"/ENGINE = \"$ENGINE\"/" "$ROOT/android/app/src/main/java/com/bilko/fs2vr/BuildConfigLib.java"
 
 # 4) APK
 cd "$ROOT/android"
@@ -45,11 +46,11 @@ ls -la "$APK"
 for a in "$@"; do
   case "$a" in
     --install) "$ADB" install -r -g "$APK"
-               "$ADB" shell appops set com.bilko.wcsagavr MANAGE_EXTERNAL_STORAGE allow ;;
+               "$ADB" shell appops set $PKG MANAGE_EXTERNAL_STORAGE allow ;;
     --run)     "$ADB" shell am broadcast -a com.oculus.vrpowermanager.prox_close >/dev/null
                "$ADB" shell input keyevent KEYCODE_WAKEUP
-               "$ADB" shell am force-stop com.bilko.wcsagavr
+               "$ADB" shell am force-stop $PKG
                "$ADB" logcat -c
-               "$ADB" shell am start -n com.bilko.wcsagavr/.WCSagaActivity ;;
+               "$ADB" shell am start -n $ACTIVITY ;;
   esac
 done

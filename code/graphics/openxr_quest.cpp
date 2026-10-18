@@ -22,7 +22,7 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 #include "playerman/player.h"
 #include "popup/popupdead.h"
 
-#define QLOG(...) __android_log_print(ANDROID_LOG_INFO, "WCSagaVR", __VA_ARGS__)
+#define QLOG(...) __android_log_print(ANDROID_LOG_INFO, "QuestVR", __VA_ARGS__)
 
 namespace {
 

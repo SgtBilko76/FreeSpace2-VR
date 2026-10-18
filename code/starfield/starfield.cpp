@@ -17,6 +17,7 @@
 #include "cmdline/cmdline.h"
 #include "debugconsole/console.h"
 #include "graphics/matrix.h"
+#include "graphics/openxr.h"
 #include "graphics/paths/PathRenderer.h"
 #include "hud/hud.h"
 #include "hud/hudtarget.h"
@@ -1774,6 +1775,11 @@ void stars_draw_stars()
 	tmp_num_stars = (Detail.num_stars * Num_stars) / MAX_DETAIL_VALUE;
 	CLAMP(tmp_num_stars, 0, Num_stars);
 
+	// Star tails come from the view change since the last draw. In VR the stars are drawn
+	// once per eye and the head moves on its own, so tails would stretch and squeeze the
+	// stars with every head turn: draw plain points there.
+	const bool tails = (Star_flags & (STAR_FLAG_TAIL|STAR_FLAG_DIM)) && !openxr_enabled();
+
 	auto path = graphics::paths::PathRenderer::instance();
 
 	path->saveState();
@@ -1802,7 +1808,7 @@ void stars_draw_stars()
 			}
 		}
 
-		if ( can_draw && (Star_flags & (STAR_FLAG_TAIL|STAR_FLAG_DIM)) ) {
+		if ( can_draw && tails ) {
 			dist = vm_vec_dist_quick( &sp->last_star_pos, &p2.world );
 
 			if ( dist > Star_max_length ) {
@@ -1835,6 +1841,9 @@ void stars_draw_stars()
 
 		if ( !can_draw )
 			continue;
+
+		if ( !tails )
+			p1 = p2;
 
 		vDst.x = fl2i(p1.screen.xyw.x) - fl2i(p2.screen.xyw.x);
 		vDst.y = fl2i(p1.screen.xyw.y) - fl2i(p2.screen.xyw.y);

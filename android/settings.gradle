@@ -11,5 +11,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "WCSaga-VR"
+rootProject.name = "FS2-VR"
 include ':app'

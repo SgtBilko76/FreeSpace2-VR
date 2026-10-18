@@ -4,10 +4,11 @@
 # wait for the death menu and save a headset screenshot.
 #   tools/quest/death_test.sh [screenshot name]
 set -u
+source "$(cd "$(dirname "$0")" && pwd)/game.sh"
 ADB="${ADB:-$HOME/Android/Sdk/platform-tools/adb}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT="${TMPDIR:-/tmp}/${1:-death}.jpg"
-LOG() { "$ADB" shell run-as com.bilko.wcsagavr cat files/data/fs2_open.log 2>/dev/null; }
+LOG() { "$ADB" shell run-as $PKG cat files/data/fs2_open.log 2>/dev/null; }
 
 "$DIR/run.sh" 50 "-pilot Bilko -start_mission qvr-deathtest.fs2" >/dev/null
 "$ADB" shell input keyevent KEYCODE_ENTER
