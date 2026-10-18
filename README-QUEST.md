@@ -49,7 +49,8 @@ in Options > Controls, "Reset to default" restores this layout):
 | Right stick left/right | Roll |
 | Right stick up/down | Throttle (stays where you leave it) |
 | Right stick click | Match target speed |
-| Left stick click | Autopilot |
+| Left stick click (tap) | Autopilot |
+| Left stick click (hold 1 s) | Warp out (end mission) |
 | Right trigger | Guns |
 | Left trigger | Missiles |
 | Right grip (hold) | Afterburner |

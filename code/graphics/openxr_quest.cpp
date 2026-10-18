@@ -55,6 +55,11 @@ float throttleLever = 0.0f;
 bool prevShiftStickUp = false, prevShiftStickDown = false;
 bool prevCommsUp = false, prevCommsDown = false;
 float lastUpdateSeconds = -1.0f;
+// left stick click: tap = autopilot (sent on release), hold = warp out
+constexpr float WARP_HOLD_SECONDS = 1.0f;
+float clickLDownSince = -1.0f;   // < 0: not held
+bool clickLWarpSent = false;
+int autopilotPulse = 0, warpPulse = 0; // frames left to hold the pad button down
 
 // Virtual keyboard (shown below the menu screen while a text field has focus)
 static_assert(OPENXR_QUEST_KB_W == VR_KB_WIDTH_PX && OPENXR_QUEST_KB_H == VR_KB_HEIGHT_PX, "keyboard image size");
@@ -633,7 +638,26 @@ void openxr_quest_update(bool stereo_frame)
 		btn(SDL_GAMEPAD_BUTTON_EAST, normal && b);
 		btn(SDL_GAMEPAD_BUTTON_WEST, normal && x);
 		btn(SDL_GAMEPAD_BUTTON_NORTH, normal && y);
-		btn(SDL_GAMEPAD_BUTTON_LEFT_STICK, normal && clickL);
+		// left stick click: short tap = autopilot, held for WARP_HOLD_SECONDS = warp out
+		if (normal && clickL) {
+			if (clickLDownSince < 0.0f) {
+				clickLDownSince = now;
+				clickLWarpSent = false;
+			} else if (!clickLWarpSent && now - clickLDownSince >= WARP_HOLD_SECONDS) {
+				clickLWarpSent = true;
+				warpPulse = 2;
+			}
+		} else {
+			if (clickLDownSince >= 0.0f && !clickLWarpSent && !clickL)
+				autopilotPulse = 2;
+			clickLDownSince = -1.0f;
+		}
+		btn(SDL_GAMEPAD_BUTTON_LEFT_STICK, autopilotPulse > 0);
+		btn(SDL_GAMEPAD_BUTTON_MISC3, warpPulse > 0);
+		if (autopilotPulse > 0)
+			autopilotPulse--;
+		if (warpPulse > 0)
+			warpPulse--;
 		btn(SDL_GAMEPAD_BUTTON_RIGHT_STICK, normal && clickR);
 		btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, gripR > 0.5f);
 		btn(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, false);
@@ -659,6 +683,8 @@ void openxr_quest_update(bool stereo_frame)
 	} else {
 		// Menus: neutral pad, laser pointer drives the mouse
 		lastUpdateSeconds = -1.0f;
+		clickLDownSince = -1.0f;
+		autopilotPulse = warpPulse = 0;
 		setPadNeutral();
 
 		// the hand that pulls its trigger takes over the pointer

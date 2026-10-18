@@ -1940,7 +1940,8 @@ static void control_config_quest_touch_defaults(CC_preset& preset)
 	button(TARGET_SHIP_IN_RETICLE, SDL_GAMEPAD_BUTTON_EAST);                // B
 	button(CYCLE_SECONDARY, SDL_GAMEPAD_BUTTON_WEST);                       // X
 	button(CYCLE_NEXT_PRIMARY, SDL_GAMEPAD_BUTTON_NORTH);                   // Y
-	button(AUTO_PILOT_TOGGLE, SDL_GAMEPAD_BUTTON_LEFT_STICK);               // left stick click
+	button(AUTO_PILOT_TOGGLE, SDL_GAMEPAD_BUTTON_LEFT_STICK);               // left stick click (tap)
+	button(END_MISSION, SDL_GAMEPAD_BUTTON_MISC3);                          // left stick click held 1 s: warp out
 	button(MATCH_TARGET_SPEED, SDL_GAMEPAD_BUTTON_RIGHT_STICK);             // right stick click
 
 	// Second layer (left grip held)
