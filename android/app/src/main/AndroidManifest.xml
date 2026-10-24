@@ -3,7 +3,7 @@
     android:installLocation="auto">
 
     <uses-feature android:glEsVersion="0x00030002" android:required="true" />
-    <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+    <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
@@ -39,6 +39,7 @@
 
         <meta-data android:name="com.oculus.supportedDevices" android:value="quest2|questpro|quest3|quest3s" />
         <meta-data android:name="com.oculus.intent.category.VR" android:value="vr_only" />
+        <meta-data android:name="pvr.app.type" android:value="vr" />
 
         <!-- Immersive OpenXR app (FSO -vr mode). -->
         <activity

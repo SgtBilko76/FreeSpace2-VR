@@ -431,11 +431,12 @@ void openxr_quest_keyboard_pose(float pos[3], float quat[4], float size[2])
 }
 
 bool hasPerfSettings = false;
+bool hasPicoControllers = false; // XR_BD_controller_interaction (PICO runtimes)
 
 SCP_vector<const char*> openxr_quest_instance_extensions()
 {
 	// Only request what the runtime offers; an unknown extension fails xrCreateInstance
-	SCP_vector<const char*> wanted = { XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME };
+	SCP_vector<const char*> wanted = { XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME, "XR_BD_controller_interaction" };
 	SCP_vector<const char*> out;
 
 	uint32_t count = 0;
@@ -450,11 +451,14 @@ SCP_vector<const char*> openxr_quest_instance_extensions()
 				out.push_back(w);
 				if (!strcmp(w, XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME))
 					hasPerfSettings = true;
+				else if (!strcmp(w, "XR_BD_controller_interaction"))
+					hasPicoControllers = true;
 				break;
 			}
 		}
 	}
-	QLOG("optional OpenXR extensions: performance_settings %d", hasPerfSettings ? 1 : 0);
+	QLOG("optional OpenXR extensions: performance_settings %d, PICO controllers %d", hasPerfSettings ? 1 : 0,
+		hasPicoControllers ? 1 : 0);
 	return out;
 }
 
@@ -521,6 +525,17 @@ void openxr_quest_init()
 	r = xrSuggestInteractionProfileBindings(xr_instance, &suggested);
 	if (r != XR_SUCCESS)
 		QLOG("xrSuggestInteractionProfileBindings failed: %d", (int)r);
+
+	// PICO controllers: same buttons under the same paths as Touch. Not fatal.
+	if (hasPicoControllers) {
+		for (const char* profile : { "/interaction_profiles/bytedance/pico4_controller",
+		                             "/interaction_profiles/bytedance/pico4s_controller",
+		                             "/interaction_profiles/bytedance/pico_neo3_controller" }) {
+			suggested.interactionProfile = path(profile);
+			XrResult pr = xrSuggestInteractionProfileBindings(xr_instance, &suggested);
+			QLOG("PICO bindings %s: %s", profile, XR_SUCCEEDED(pr) ? "ok" : "not supported");
+		}
+	}
 
 	for (int h = 0; h < 2; h++) {
 		XrActionSpaceCreateInfo si{ XR_TYPE_ACTION_SPACE_CREATE_INFO, nullptr, aimPose, handPath[h], XrPosef{ XrQuaternionf{ 0, 0, 0, 1 }, XrVector3f{ 0, 0, 0 } } };

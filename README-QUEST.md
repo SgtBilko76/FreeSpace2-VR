@@ -1,4 +1,4 @@
-# FreeSpace 2 VR (Meta Quest)
+# FreeSpace 2 VR (Meta Quest and PICO)
 
 FreeSpace 2 running natively on the Meta Quest 3, built on the
 [FreeSpace Open](https://github.com/scp-fs2open/fs2open.github.com) engine with
@@ -25,6 +25,16 @@ The APK contains only the engine. You need your own copy of FreeSpace 2
      [innoextract](https://constexpr.org/innoextract/)).
 3. Start **FreeSpace 2 VR** from *Unknown Sources* and allow
    "access to all files" when asked.
+
+### PICO (untested)
+
+The same APK also runs on PICO 4 / Neo 3 (PICO OS 5.9.0 or newer); the PICO
+controllers use the same button layout as the Touch controllers below. PICO
+support is new and not tested on PICO hardware yet. Install with
+`adb install -r -g` (SideQuest is a Quest tool), copy the game files to
+`/sdcard/FS2` the same way, and allow storage access when the app asks on the
+first start (it restarts by itself afterwards). If it doesn't start or the
+controllers do nothing, `adb logcat -s FS2VR:* QuestVR:*` shows how far it gets.
 
 ## Controls
 
