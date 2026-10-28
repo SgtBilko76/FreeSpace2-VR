@@ -38,6 +38,8 @@ controllers do nothing, `adb logcat -s FS2VR:* QuestVR:*` shows how far it gets.
 
 ## Controls
 
+![FreeSpace 2 VR controller mapping](docs/controls.webp)
+
 Menus, briefings and cutscenes are shown on a large screen in front of you.
 
 | Input | Action |
