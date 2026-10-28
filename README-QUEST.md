@@ -1,5 +1,7 @@
 # FreeSpace 2 VR (Meta Quest and PICO)
 
+**Download, install guide, controls and pictures: [portroyale.online/freespace2.html](https://portroyale.online/freespace2.html)**
+
 FreeSpace 2 running natively on the Meta Quest 3, built on the
 [FreeSpace Open](https://github.com/scp-fs2open/fs2open.github.com) engine with
 OpenXR on OpenGL ES. Branch: `fs2-vr`.
