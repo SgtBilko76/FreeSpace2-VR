@@ -453,6 +453,7 @@ void psnet_init(uint16_t port_num)
 	// initialize UDP now
 	if ( !psnet_init_socket() ) {
 		ml_printf("Error on UDP startup %d", Psnet_failure_code);
+		mprintf(("PSNET: network startup failed (error %d)\n", Psnet_failure_code));
 		return;
 	}
 
@@ -468,6 +469,7 @@ void psnet_init(uint16_t port_num)
 	}
 
 	Network_status = NETWORK_STATUS_RUNNING;
+	mprintf(("PSNET: network running on port %d\n", static_cast<int>(Psnet_default_port)));
 }
 
 /**
@@ -1154,7 +1156,13 @@ bool psnet_get_addr(const char *host, const char *port, SOCKADDR_STORAGE *addr, 
 
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = 0;
+#ifdef __ANDROID__
+	// Android's getaddrinfo() rejects AI_V4MAPPED (EAI_BADFLAGS), which left multiplayer without a
+	// network ("TCP/IP protocol not found"); IPv4 results are mapped to IPv6 below anyway.
+	hints.ai_flags = 0;
+#else
 	hints.ai_flags = AI_V4MAPPED;
+#endif
 
 	if (flags & ADDR_FLAG_NUMERIC_SERVICE) {
 		hints.ai_flags |= AI_NUMERICSERV;
@@ -1162,6 +1170,10 @@ bool psnet_get_addr(const char *host, const char *port, SOCKADDR_STORAGE *addr, 
 
 	if (host == nullptr) {
 		hints.ai_flags |= AI_PASSIVE;
+#ifdef __ANDROID__
+		// listen on "::" (dual-stack, IPV6_V6ONLY is off) rather than whichever family comes first
+		hints.ai_family = AF_INET6;
+#endif
 	} else {
 		// avoid dns lookups if we can
 		if ( psnet_is_ip_notation(AF_UNSPEC, host) ) {
