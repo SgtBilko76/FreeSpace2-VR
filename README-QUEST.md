@@ -55,7 +55,8 @@ Text fields (pilot callsign, chat): a keyboard appears below the menu screen whi
 field is active; point at a key and pull the trigger. Hold Back to keep deleting.
 
 Flight (the Touch controllers act as one gamepad; every binding can be changed
-in Options > Controls, "Reset to default" restores this layout):
+in Options > Controls, "Reset to default" restores this layout). The table shows the
+Jet stick layout; Classic swaps the two sticks (see below):
 
 | Input | Action |
 |---|---|
@@ -78,6 +79,12 @@ in Options > Controls, "Reset to default" restores this layout):
 
 Comms menu open: left stick up/down picks an order, A or a trigger confirms,
 Y closes the menu.
+
+**Stick layout:** open *Options → Controls* and a *VR controller setup* panel appears below
+the screen. Point at **Jet** (right stick flies, left stick is the throttle lever and rolls; the
+default) or **Classic** (the old layout: left stick flies, right stick is the throttle lever and
+rolls) and pull the trigger; the choice is saved at once. The boost push works on whichever
+stick is the throttle lever.
 
 ## Building
 

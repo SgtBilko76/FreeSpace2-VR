@@ -19,6 +19,9 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 #include "graphics/render.h"
 #include "graphics/openxr_quest_keyboard.h"
 #include "graphics/openxr_quest_radial.h"
+#include "graphics/openxr_quest_setup.h"
+#include "gamesequence/gamesequence.h"
+#include "osapi/osregistry.h"
 #include "controlconfig/controlsconfig.h"
 #include "io/key.h"
 #include "io/mouse.h"
@@ -163,6 +166,16 @@ float kbW = 1.1f, kbH = 1.1f * VR_KB_HEIGHT_PX / VR_KB_WIDTH_PX;
 bool kbTrig[2] = { false, false };    // trigger state per hand (with hysteresis)
 bool kbHeld[2] = { false, false };    // this trigger press started on the keyboard
 Uint64 kbRepeatMs = 0;                // next Backspace repeat
+
+// Stick layout, picked on the VR setup panel below Options > Controls and saved in the config:
+// VR_STICKS_JET (right stick flies, left stick = throttle lever + roll) or VR_STICKS_CLASSIC.
+// The panel shares the keyboard's quad (never both: the keyboard wins).
+int stickLayout = -1;                 // -1 = not read yet
+bool suVisible = false, suDirty = true;
+bool suTrig[2] = { false, false };
+int suHover[2] = { VR_SETUP_NONE, VR_SETUP_NONE };
+const char* const STICK_CONFIG_SECTION = "QuestVR";
+const char* const STICK_CONFIG_KEY = "StickLayout";
 
 XrPath path(const char* s)
 {
@@ -485,6 +498,60 @@ void keyboardUpdate(float trigL, float trigR, bool onKb[2])
 	}
 }
 
+int sticks()
+{
+	if (stickLayout < 0) {
+		stickLayout = os_config_read_uint(STICK_CONFIG_SECTION, STICK_CONFIG_KEY, VR_STICKS_JET) == VR_STICKS_CLASSIC ? VR_STICKS_CLASSIC : VR_STICKS_JET;
+		QLOG("stick layout: %s", stickLayout == VR_STICKS_JET ? "jet" : "classic");
+	}
+	return stickLayout;
+}
+
+// name of the Touch stick that is the throttle lever in the current layout
+const char* throttleStickName()
+{
+	return sticks() == VR_STICKS_JET ? "left stick" : "right stick";
+}
+
+// Menus: the setup panel while the game's Options > Controls screen is open. Same quad geometry
+// and trigger rules as the keyboard: onKb[h] = that hand's ray is on the panel.
+void setupUpdate(float trigL, float trigR, bool onKb[2])
+{
+	const bool want = !kbVisible && gameseq_get_state() == GS_STATE_CONTROL_CONFIG;
+	if (want && !suVisible) {
+		keyboardPlace();
+		suHover[LEFT] = suHover[RIGHT] = VR_SETUP_NONE;
+		suDirty = true;
+		QLOG("controller setup panel shown");
+	} else if (!want && suVisible) {
+		QLOG("controller setup panel hidden");
+	}
+	suVisible = want;
+
+	const float trig[2] = { trigL, trigR };
+	for (int h = 0; h < 2; h++) {
+		float u, v;
+		const bool on = suVisible && keyboardHit(h, u, v);
+		const int hover = on ? VrSetup_ButtonAt(u, v) : VR_SETUP_NONE;
+		if (hover != suHover[h]) {
+			suHover[h] = hover;
+			suDirty = true;
+		}
+		const bool down = trig[h] > (suTrig[h] ? 0.4f : 0.6f);
+		if (down && !suTrig[h] && on) {
+			kbHeld[h] = true; // this trigger press belongs to the panel: no mouse click
+			if (hover != VR_SETUP_NONE && hover != sticks()) {
+				stickLayout = hover;
+				os_config_write_uint(STICK_CONFIG_SECTION, STICK_CONFIG_KEY, static_cast<unsigned int>(stickLayout));
+				suDirty = true;
+				QLOG("stick layout set to %s", stickLayout == VR_STICKS_JET ? "jet" : "classic");
+			}
+		}
+		suTrig[h] = down;
+		onKb[h] = onKb[h] || on;
+	}
+}
+
 } // namespace
 
 void openxr_quest_text_field_active()
@@ -496,11 +563,18 @@ void openxr_quest_text_field_active()
 
 bool openxr_quest_keyboard_visible()
 {
-	return kbVisible;
+	return kbVisible || suVisible;
 }
 
 bool openxr_quest_keyboard_render(uint8_t* rgba)
 {
+	if (!kbVisible) { // the controller setup panel on the keyboard's quad
+		if (!suDirty)
+			return false;
+		VrSetup_Render(rgba, sticks(), suHover[LEFT], suHover[RIGHT]);
+		suDirty = false;
+		return true;
+	}
 	if (!kbDirty)
 		return false;
 	VrKeyboard_Render(&kb, rgba, 0, SDL_GetTicks());
@@ -756,9 +830,17 @@ void openxr_quest_update(bool stereo_frame)
 		// left ring: open while the left grip is held (not while the comms menu is up)
 		const bool radial = shift && !comms;
 
-		// left stick Y: throttle lever (full sweep in about one second), not while the left stick
-		// points into the ring or the comms menu. Afterburner detent: lever at full + stick pushed again.
-		const float thr = (comms || radial) ? 0.0f : stL.y;
+		// Stick layout (setup panel on Options > Controls): one Touch stick flies (pitch + turn), the
+		// other is the throttle lever (Y) and rolls (X). Jet: right stick flies; classic: left stick.
+		// A stick that points into a radial menu (or the comms menu) doesn't fly meanwhile.
+		const bool jet = sticks() == VR_STICKS_JET;
+		const XrVector2f flyStick = jet ? stR : stL, thrStick = jet ? stL : stR;
+		const bool leftBusy = comms || radial, rightBusy = false;
+		const bool flyBusy = jet ? rightBusy : leftBusy, thrBusy = jet ? leftBusy : rightBusy;
+
+		// throttle stick Y: throttle lever (full sweep in about one second). Afterburner detent:
+		// lever at full + stick pushed again.
+		const float thr = thrBusy ? 0.0f : thrStick.y;
 		if (thr < 0.5f)
 			boostArmed = throttleLever >= 0.999f;
 		const bool boost = boostArmed && thr > 0.85f;
@@ -794,12 +876,10 @@ void openxr_quest_update(bool stereo_frame)
 
 		if (pad) {
 			// the left stick points into the radial menu while it is open, so it doesn't steer then
-			// Jet layout: right stick = pitch + turn (pad left stick axes), left stick X = roll (pad
-			// right X), left stick Y = throttle lever (pad right Y). The left stick doesn't fly while it
-			// points into the radial menu (or the comms menu).
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, axisValue(stR.x));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, axisValue(-stR.y));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, (comms || radial) ? 0 : axisValue(stL.x));
+			// pad left stick = pitch + turn, pad right X = roll, pad right Y = throttle lever
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, flyBusy ? 0 : axisValue(flyStick.x));
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, flyBusy ? 0 : axisValue(-flyStick.y));
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, thrBusy ? 0 : axisValue(thrStick.x));
 			// absolute throttle axis: up (-32767) = full speed, down (+32767) = stop
 			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, axisValue(1.0f - 2.0f * throttleLever));
 			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, comms ? 0 : triggerValue(trigL));
@@ -858,6 +938,7 @@ void openxr_quest_update(bool stereo_frame)
 			prevTrigger = false;
 		}
 		kbVisible = false;
+		suVisible = false;
 	} else {
 		// Menus: neutral pad, laser pointer drives the mouse
 		lastUpdateSeconds = -1.0f;
@@ -875,10 +956,13 @@ void openxr_quest_update(bool stereo_frame)
 
 		// virtual keyboard first: a ray on the keyboard neither moves the mouse nor clicks
 		bool onKb[2] = { false, false };
-		if (hudPointer)
+		if (hudPointer) {
 			kbVisible = false;
-		else
+			suVisible = false;
+		} else {
 			keyboardUpdate(trigL, trigR, onKb);
+			setupUpdate(trigL, trigR, onKb);
+		}
 
 		float mx, my;
 		if (!onKb[pointerHand] && (hudPointer ? pointerHitHud(pointerHand, mx, my) : pointerHit(pointerHand, mx, my)))
@@ -922,13 +1006,13 @@ const char* openxr_quest_control_hint(int control, int scancode)
 	};
 	if (control >= 0 && control < static_cast<int>(Control_config.size())) {
 		switch (control) {
-		case FORWARD_THRUST: return "left stick up (throttle)";
-		case REVERSE_THRUST: return "left stick down (throttle)";
-		case ZERO_THROTTLE: return "left stick all the way down";
-		case MAX_THROTTLE: return "left stick all the way up";
-		case ONE_THIRD_THROTTLE: return "left stick to one third";
-		case TWO_THIRDS_THROTTLE: return "left stick to two thirds";
-		case AFTERBURNER: return "left stick forward again at full throttle (hold)";
+		case FORWARD_THRUST: out = SCP_string(throttleStickName()) + " up (throttle)"; return out.c_str();
+		case REVERSE_THRUST: out = SCP_string(throttleStickName()) + " down (throttle)"; return out.c_str();
+		case ZERO_THROTTLE: out = SCP_string(throttleStickName()) + " all the way down"; return out.c_str();
+		case MAX_THROTTLE: out = SCP_string(throttleStickName()) + " all the way up"; return out.c_str();
+		case ONE_THIRD_THROTTLE: out = SCP_string(throttleStickName()) + " to one third"; return out.c_str();
+		case TWO_THIRDS_THROTTLE: out = SCP_string(throttleStickName()) + " to two thirds"; return out.c_str();
+		case AFTERBURNER: out = SCP_string(throttleStickName()) + " forward again at full throttle (hold)"; return out.c_str();
 		case END_MISSION: return "left stick click (hold 1 s)";
 		default: break;
 		}
