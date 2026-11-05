@@ -129,7 +129,7 @@ ADE_VIRTVAR(Height, l_Font, "number", "Height of font (in pixels)", "number", "F
 		LuaError(L, "Height setting isn't available anymore!");
 	}
 
-	return ade_set_args(L, "f", fh->Get()->getHeight());
+	return ade_set_args(L, "f", fh->Get()->getHeight() * Font_vr_hud_scale);
 }
 
 ADE_VIRTVAR(TopOffset, l_Font, "number", "The offset this font has from the baseline of textdrawing downwards. (in pixels)", "number", "Font top offset, or 0 if the handle is invalid")

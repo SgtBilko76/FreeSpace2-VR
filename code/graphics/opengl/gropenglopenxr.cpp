@@ -50,6 +50,7 @@
 #endif
 #include "graphics/openxr_internal.h"
 #include "graphics/openxr_quest.h"
+#include "graphics/openxr_quest_radial.h"
 
 #ifdef __ANDROID__
 using XrSwapchainImageGL = XrSwapchainImageOpenGLESKHR;
@@ -364,6 +365,11 @@ static XrSwapchain xr_hud_swapchain = XR_NULL_HANDLE;
 static SCP_vector<XrSwapchainImageGL> xr_hud_images;
 static uint32_t xr_hud_w = 0, xr_hud_h = 0;
 static bool xr_hud_ready = false; // the HUD image was written for the current frame
+// The HUD is drawn into its own, larger canvas (openxr_quest_hud_canvas_w() wide) instead of the
+// eye-sized back buffer, so its text stays readable: while it is drawn, Back_framebuffer points at
+// this framebuffer (render-to-texture code rebinds "the back buffer" when it is done).
+static GLuint xr_hud_fbo = 0, xr_hud_color = 0, xr_hud_depth = 0;
+static GLuint xr_hud_saved_back = 0;
 static constexpr float XR_HUD_DISTANCE = OPENXR_QUEST_HUD_DISTANCE; // metres
 
 // Half vertical field of view (radians) of the symmetric camera the HUD is drawn with. FSO's
@@ -379,9 +385,52 @@ float openxr_quest_hud_half_fov() {
 	return std::atan(std::tan(std::max(h, v)) / OPENXR_QUEST_HUD_ASPECT);
 }
 
+static void openxr_create_hud_canvas() {
+	glGenTextures(1, &xr_hud_color);
+	GL_state.Texture.SetActiveUnit(0);
+	GL_state.Texture.SetTarget(GL_TEXTURE_2D);
+	GL_state.Texture.Enable(xr_hud_color);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, xr_hud_w, xr_hud_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+
+	glGenTextures(1, &xr_hud_depth);
+	GL_state.Texture.Enable(xr_hud_depth);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, xr_hud_w, xr_hud_h, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+	GL_state.Texture.Enable(0);
+
+	glGenFramebuffers(1, &xr_hud_fbo);
+	GL_state.PushFramebufferState();
+	GL_state.BindFrameBuffer(xr_hud_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, xr_hud_color, 0);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, xr_hud_depth, 0);
+	const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+	GL_state.PopFramebufferState();
+	if (status != GL_FRAMEBUFFER_COMPLETE) {
+		mprintf(("OpenXR: HUD canvas framebuffer incomplete (0x%x), drawing the HUD at eye resolution\n", status));
+		glDeleteFramebuffers(1, &xr_hud_fbo);
+		glDeleteTextures(1, &xr_hud_color);
+		glDeleteTextures(1, &xr_hud_depth);
+		xr_hud_fbo = xr_hud_color = xr_hud_depth = 0;
+		openxr_quest_set_hud_canvas_w(gr_screen.max_w);
+	}
+}
+
 static bool openxr_create_hud_swapchain() {
-	xr_hud_w = static_cast<uint32_t>(gr_screen.max_w);
-	xr_hud_h = static_cast<uint32_t>(std::lround(gr_screen.max_w / OPENXR_QUEST_HUD_ASPECT));
+	openxr_quest_set_hud_canvas_w(0); // pick the size for this headset
+	xr_hud_w = static_cast<uint32_t>(openxr_quest_hud_canvas_w());
+	xr_hud_h = static_cast<uint32_t>(std::lround(xr_hud_w / OPENXR_QUEST_HUD_ASPECT));
+	openxr_create_hud_canvas();
+	if (xr_hud_fbo == 0) {
+		xr_hud_w = static_cast<uint32_t>(gr_screen.max_w);
+		xr_hud_h = static_cast<uint32_t>(std::lround(gr_screen.max_w / OPENXR_QUEST_HUD_ASPECT));
+	}
 	XrSwapchainCreateInfo info{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
 	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
 	info.format = xr_swapchains[0]->format;
@@ -409,6 +458,21 @@ bool openxr_quest_hud_begin() {
 	if (!openxr_enabled() || xr_hud_swapchain == XR_NULL_HANDLE || xr_stage != OpenXRFBStage::FIRST)
 		return false;
 
+	if (xr_hud_fbo) {
+		// Draw the HUD alone into the (cleared, transparent) HUD canvas, which stands in for the back buffer
+		xr_hud_saved_back = Back_framebuffer;
+		Back_framebuffer = xr_hud_fbo;
+		GL_state.BindFrameBuffer(xr_hud_fbo);
+		glViewport(0, 0, xr_hud_w, xr_hud_h);
+		GL_state.ScissorTest(GL_FALSE);
+		GL_state.ColorMask(true, true, true, true);
+		GL_state.DepthMask(GL_TRUE);
+		glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+		glClearDepthf(1.0f);
+		glClearStencil(0);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+		return true;
+	}
 	// Draw the HUD alone into the (cleared, transparent) back buffer
 	GL_state.BindFrameBuffer(Back_framebuffer);
 	glViewport(0, 0, gr_screen.max_w, gr_screen.max_h);
@@ -420,6 +484,10 @@ bool openxr_quest_hud_begin() {
 }
 
 void openxr_quest_hud_end() {
+	if (xr_hud_fbo) {
+		Back_framebuffer = xr_hud_saved_back;
+		GL_state.BindFrameBuffer(Back_framebuffer);
+	}
 	uint32_t index = 0;
 	XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
 	if (xrAcquireSwapchainImage(xr_hud_swapchain, &acquireInfo, &index) != XR_SUCCESS)
@@ -442,10 +510,12 @@ void openxr_quest_hud_end() {
 	GL_state.StencilTest(GL_FALSE);
 
 	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_COPY, SDR_FLAG_COPY_CLAMP01 | SDR_FLAG_COPY_LUMA_ALPHA));
-	GL_state.Texture.Enable(0, GL_TEXTURE_2D, Back_texture);
+	GL_state.Texture.Enable(0, GL_TEXTURE_2D, xr_hud_fbo ? xr_hud_color : Back_texture);
 	Current_shader->program->Uniforms.setTextureUniform("tex", 0);
-	// the HUD canvas is the bottom xr_hud_h rows of the back buffer (GL origin bottom-left)
-	opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, i2fl(xr_hud_h) / i2fl(gr_screen.max_h));
+	if (xr_hud_fbo)
+		opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, 1.0f);
+	else // the HUD canvas is the bottom xr_hud_h rows of the back buffer (GL origin bottom-left)
+		opengl_draw_full_screen_textured(0.0f, 0.0f, 1.0f, i2fl(xr_hud_h) / i2fl(gr_screen.max_h));
 
 	glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0);
 	glDrawBuffer(GL_NONE);
@@ -455,6 +525,13 @@ void openxr_quest_hud_end() {
 	XrSwapchainImageReleaseInfo releaseInfo{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
 	xrReleaseSwapchainImage(xr_hud_swapchain, &releaseInfo);
 	xr_hud_ready = true;
+}
+
+// Quest compositor: supersample + sharpen a quad layer (much crisper text); chained via .next
+static XrCompositionLayerSettingsFB xr_sharpen_settings{ XR_TYPE_COMPOSITION_LAYER_SETTINGS_FB, nullptr,
+	XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SUPER_SAMPLING_BIT_FB | XR_COMPOSITION_LAYER_SETTINGS_QUALITY_SHARPENING_BIT_FB };
+static const void* openxr_quad_next() {
+	return openxr_quest_has_layer_settings() ? &xr_sharpen_settings : nullptr;
 }
 
 // Quad covering exactly the symmetric HUD camera's frustum (centred on the ship's nose),
@@ -467,6 +544,7 @@ static XrCompositionLayerQuad openxr_hud_layer() {
 	const float D = XR_HUD_DISTANCE;
 
 	XrCompositionLayerQuad quad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
+	quad.next = openxr_quad_next();
 	quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 	quad.space = xr_space;
 	quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
@@ -480,57 +558,64 @@ static XrCompositionLayerQuad openxr_hud_layer() {
 	return quad;
 }
 
-// ---- Quest: virtual keyboard layer (menus, while a text field has focus) -----------------
-static XrSwapchain xr_kb_swapchain = XR_NULL_HANDLE;
-static SCP_vector<XrSwapchainImageGL> xr_kb_images;
-static bool xr_kb_create_failed = false;
-static bool xr_kb_uploaded = false; // an image was released since the keyboard opened
-static SCP_vector<uint8_t> xr_kb_pixels;
+// ---- Quest: CPU-drawn quad layers (virtual keyboard in menus, radial menu in flight) -------
+struct CpuQuad {
+	const char* name;
+	int w, h;
+	XrSwapchain swapchain = XR_NULL_HANDLE;
+	SCP_vector<XrSwapchainImageGL> images;
+	bool createFailed = false;
+	bool uploaded = false; // an image was released since the layer appeared
+	SCP_vector<uint8_t> pixels;
+};
+static CpuQuad xr_kb_quad{ "keyboard", OPENXR_QUEST_KB_W, OPENXR_QUEST_KB_H };
+static CpuQuad xr_radial_quad[2] = { { "left radial menu", VR_RADIAL_W, VR_RADIAL_H },
+	{ "right radial menu", VR_RADIAL_W, VR_RADIAL_H } };
 
-static bool openxr_create_kb_swapchain() {
+static bool openxr_create_cpu_quad(CpuQuad& q) {
 	XrSwapchainCreateInfo info{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
 	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
 	info.format = xr_swapchains[0]->format;
 	info.sampleCount = 1;
-	info.width = OPENXR_QUEST_KB_W;
-	info.height = OPENXR_QUEST_KB_H;
+	info.width = q.w;
+	info.height = q.h;
 	info.faceCount = 1;
 	info.arraySize = 1;
 	info.mipCount = 1;
-	if (xrCreateSwapchain(xr_session, &info, &xr_kb_swapchain) != XR_SUCCESS) {
-		mprintf(("OpenXR: could not create the keyboard swapchain\n"));
-		xr_kb_swapchain = XR_NULL_HANDLE;
-		xr_kb_create_failed = true;
+	if (xrCreateSwapchain(xr_session, &info, &q.swapchain) != XR_SUCCESS) {
+		mprintf(("OpenXR: could not create the %s swapchain\n", q.name));
+		q.swapchain = XR_NULL_HANDLE;
+		q.createFailed = true;
 		return false;
 	}
 	uint32_t count = 0;
-	xrEnumerateSwapchainImages(xr_kb_swapchain, 0, &count, nullptr);
-	xr_kb_images.assign(count, XrSwapchainImageGL{ XR_TYPE_SWAPCHAIN_IMAGE_GL, nullptr, 0 });
-	xrEnumerateSwapchainImages(xr_kb_swapchain, count, &count, (XrSwapchainImageBaseHeader*)xr_kb_images.data());
-	xr_kb_pixels.resize(static_cast<size_t>(OPENXR_QUEST_KB_W) * OPENXR_QUEST_KB_H * 4);
-	mprintf(("OpenXR: keyboard layer %dx%d, %u images\n", OPENXR_QUEST_KB_W, OPENXR_QUEST_KB_H, count));
+	xrEnumerateSwapchainImages(q.swapchain, 0, &count, nullptr);
+	q.images.assign(count, XrSwapchainImageGL{ XR_TYPE_SWAPCHAIN_IMAGE_GL, nullptr, 0 });
+	xrEnumerateSwapchainImages(q.swapchain, count, &count, (XrSwapchainImageBaseHeader*)q.images.data());
+	q.pixels.resize(static_cast<size_t>(q.w) * q.h * 4);
+	mprintf(("OpenXR: %s layer %dx%d, %u images\n", q.name, q.w, q.h, count));
 	return true;
 }
 
-// Uploads the keyboard image when it changed; returns true when the layer can be submitted
-static bool openxr_update_kb_layer() {
-	if (!openxr_quest_keyboard_visible()) {
-		xr_kb_uploaded = false;
+// Uploads the image when render() drew a new one; returns true when the layer can be submitted.
+// render(pixels, force) draws into pixels and returns false when the last image is still current.
+template <typename RenderFn>
+static bool openxr_update_cpu_quad(CpuQuad& q, bool visible, RenderFn render) {
+	if (!visible) {
+		q.uploaded = false;
 		return false;
 	}
-	if (xr_kb_swapchain == XR_NULL_HANDLE && (xr_kb_create_failed || !openxr_create_kb_swapchain()))
+	if (q.swapchain == XR_NULL_HANDLE && (q.createFailed || !openxr_create_cpu_quad(q)))
 		return false;
-	if (!xr_kb_uploaded)
-		openxr_quest_keyboard_render(xr_kb_pixels.data()); // fresh image for a new keyboard
-	else if (!openxr_quest_keyboard_render(xr_kb_pixels.data()))
-		return true; // the last released image is still current
+	if (!render(q.pixels.data(), !q.uploaded))
+		return q.uploaded; // the last released image is still current
 
 	uint32_t index = 0;
 	XrSwapchainImageAcquireInfo acquireInfo{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-	if (xrAcquireSwapchainImage(xr_kb_swapchain, &acquireInfo, &index) != XR_SUCCESS)
-		return xr_kb_uploaded;
+	if (xrAcquireSwapchainImage(q.swapchain, &acquireInfo, &index) != XR_SUCCESS)
+		return q.uploaded;
 	XrSwapchainImageWaitInfo waitInfo{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, nullptr, XR_INFINITE_DURATION };
-	xrWaitSwapchainImage(xr_kb_swapchain, &waitInfo);
+	xrWaitSwapchainImage(q.swapchain, &waitInfo);
 
 	// GL textures are bottom-up: upload the rows of the top-down image in reverse order
 	GLint prevActive = 0, prevTex = 0, prevUnpack = 0, prevAlign = 0;
@@ -541,35 +626,185 @@ static bool openxr_update_kb_layer() {
 	glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevAlign);
 	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-	glBindTexture(GL_TEXTURE_2D, xr_kb_images[index].image);
-	const size_t row = static_cast<size_t>(OPENXR_QUEST_KB_W) * 4;
-	for (int y = 0; y < OPENXR_QUEST_KB_H; y++)
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, OPENXR_QUEST_KB_H - 1 - y, OPENXR_QUEST_KB_W, 1, GL_RGBA, GL_UNSIGNED_BYTE, xr_kb_pixels.data() + row * y);
+	glBindTexture(GL_TEXTURE_2D, q.images[index].image);
+	const size_t row = static_cast<size_t>(q.w) * 4;
+	for (int y = 0; y < q.h; y++)
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, q.h - 1 - y, q.w, 1, GL_RGBA, GL_UNSIGNED_BYTE, q.pixels.data() + row * y);
 	glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(prevTex));
 	glPixelStorei(GL_UNPACK_ALIGNMENT, prevAlign);
 	glBindBuffer(GL_PIXEL_UNPACK_BUFFER, static_cast<GLuint>(prevUnpack));
 	glActiveTexture(static_cast<GLenum>(prevActive));
 
 	XrSwapchainImageReleaseInfo releaseInfo{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-	xrReleaseSwapchainImage(xr_kb_swapchain, &releaseInfo);
-	xr_kb_uploaded = true;
+	xrReleaseSwapchainImage(q.swapchain, &releaseInfo);
+	q.uploaded = true;
 	return true;
 }
 
-static XrCompositionLayerQuad openxr_kb_layer() {
-	float pos[3], quat[4], size[2];
-	openxr_quest_keyboard_pose(pos, quat, size);
+static XrCompositionLayerQuad openxr_cpu_quad_layer(const CpuQuad& q, const float pos[3], const float quat[4], const float size[2]) {
 	XrCompositionLayerQuad quad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
+	quad.next = openxr_quad_next();
 	quad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 	quad.space = xr_space;
 	quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-	quad.subImage = { xr_kb_swapchain, { { 0, 0 }, { OPENXR_QUEST_KB_W, OPENXR_QUEST_KB_H } }, 0 };
+	quad.subImage = { q.swapchain, { { 0, 0 }, { q.w, q.h } }, 0 };
 	quad.pose.orientation = XrQuaternionf{ quat[0], quat[1], quat[2], quat[3] };
 	quad.pose.position = XrVector3f{ pos[0], pos[1], pos[2] };
 	quad.size = XrExtent2Df{ size[0], size[1] };
 	return quad;
 }
+
+// ---- Quest: menu / cutscene screen as its own quad layer ---------------------------------------
+// Drawing the menu screen into the eye images resamples it twice and leaves only a few hundred
+// pixels across the menu; as a quad layer the compositor samples it straight onto the display.
+static XrSwapchain xr_screen_swapchain = XR_NULL_HANDLE;
+static SCP_vector<XrSwapchainImageGL> xr_screen_images;
+static bool xr_screen_create_failed = false;
+static bool xr_screen_ready = false; // a screen image was drawn this frame
+static int xr_screen_w = 0, xr_screen_h = 0;
+
+static bool openxr_create_screen_swapchain() {
+	xr_screen_w = gr_screen.max_w;
+	xr_screen_h = gr_screen.max_h;
+	XrSwapchainCreateInfo info{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
+	info.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+	info.format = xr_swapchains[0]->format;
+	info.sampleCount = 1;
+	info.width = static_cast<uint32_t>(xr_screen_w);
+	info.height = static_cast<uint32_t>(xr_screen_h);
+	info.faceCount = 1;
+	info.arraySize = 1;
+	info.mipCount = 1;
+	if (xrCreateSwapchain(xr_session, &info, &xr_screen_swapchain) != XR_SUCCESS) {
+		mprintf(("OpenXR: could not create the menu screen swapchain, drawing it into the eye images\n"));
+		xr_screen_swapchain = XR_NULL_HANDLE;
+		xr_screen_create_failed = true;
+		return false;
+	}
+	uint32_t count = 0;
+	xrEnumerateSwapchainImages(xr_screen_swapchain, 0, &count, nullptr);
+	xr_screen_images.assign(count, XrSwapchainImageGL{ XR_TYPE_SWAPCHAIN_IMAGE_GL, nullptr, 0 });
+	xrEnumerateSwapchainImages(xr_screen_swapchain, count, &count, (XrSwapchainImageBaseHeader*)xr_screen_images.data());
+	mprintf(("OpenXR: menu screen layer %dx%d, %u images\n", xr_screen_w, xr_screen_h, count));
+	return true;
+}
+
+static XrCompositionLayerQuad openxr_screen_layer() {
+	// same place and size as the plane the pointer code aims at: 4 m tall, 4 m in front
+	XrCompositionLayerQuad quad{ XR_TYPE_COMPOSITION_LAYER_QUAD };
+	quad.next = openxr_quad_next();
+	quad.layerFlags = 0;
+	quad.space = xr_space;
+	quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+	quad.subImage = { xr_screen_swapchain, { { 0, 0 }, { xr_screen_w, xr_screen_h } }, 0 };
+	quad.pose.orientation = XrQuaternionf{ 0.0f, 0.0f, 0.0f, 1.0f };
+	quad.pose.position = XrVector3f{ static_cast<float>(xr_offset.xyz.x), static_cast<float>(xr_offset.xyz.y),
+		static_cast<float>(-xr_offset.xyz.z - 4.0f) };
+	quad.size = XrExtent2Df{ 4.0f * gr_screen.clip_aspect, 4.0f };
+	return quad;
+}
 #endif
+
+// Draws the mono menu / cutscene image (xr_swap_tex) as the 4 m screen plane, plus the mouse
+// cursor, into `target` seen from `position` / `orientation` with `fov`
+static void openxr_draw_menu_plane(GLuint target, int w, int h, const vec3d& position, const matrix& orientation, const asymmetric_fov& fov) {
+	GR_DEBUG_SCOPE("XR Plane");
+
+	GL_state.PushFramebufferState();
+	GL_state.BindFrameBuffer(xr_fbo);
+
+	glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, 0);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	GL_state.Texture.Enable(0, GL_TEXTURE_2D, xr_swap_tex);
+	opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_COPY_WORLD, 0));
+	Current_shader->program->Uniforms.setTextureUniform("tex", 0);
+
+	gr_set_clip(0, 0, w, h, GR_RESIZE_REPLACE);
+	gr_set_proj_matrix(fov, i2fl(w) / i2fl(h), 0.01f, 1000);
+	gr_set_view_matrix(&position, &orientation);
+
+	glViewport(0, 0, w, h);
+	GL_state.ScissorTest(GL_FALSE);
+	GL_state.SetZbufferType(gr_zbuffer_type::ZBUFFER_TYPE_NONE);
+
+	GLfloat v[4][5] = {
+		{
+			-2.0f * gr_screen.clip_aspect, -2.0f, 4, 0, 0
+		},
+		{
+			2.0f * gr_screen.clip_aspect, -2.0f, 4, 1, 0
+		},
+		{
+			2.0f * gr_screen.clip_aspect, 2.0f, 4, 1, 1
+		},
+		{
+			-2.0f * gr_screen.clip_aspect, 2.0f, 4, 0, 1
+		}
+	};
+
+	vertex_layout vert_def;
+	vert_def.add_vertex_component(vertex_format_data::POSITION3, sizeof(GLfloat) * 5, 0);
+	vert_def.add_vertex_component(vertex_format_data::TEX_COORD2, sizeof(GLfloat) * 5, sizeof(GLfloat) * 3);
+
+	gr_matrix_set_uniforms();
+	// black surroundings around the menu / cutscene screen
+	gr_set_clear_color(0, 0, 0);
+	gr_clear();
+	gr_set_clear_color(0, 0, 0);
+	opengl_render_primitives_immediate(PRIM_TYPE_TRIFAN, &vert_def, 4, v, sizeof(v));
+
+	//And if we have a curser, it also needs to be put onscreen manually
+	if (io::mouse::CursorManager::get()->isCursorShown()) {
+		opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_COPY_WORLD, SDR_FLAG_COPY_FROM_ARRAY));
+		Current_shader->program->Uniforms.setTextureUniform("tex", 0);
+		
+		float u_scale, v_scale;
+		uint32_t array_index;
+		int mouse_bm = io::mouse::CursorManager::get()->getCurrentCursor()->getBitmapHandle();
+		int mousex, mousey, mousew, mouseh;
+
+		bm_get_info(mouse_bm, &mousew, &mouseh);
+		gr_opengl_tcache_set(mouse_bm, TCACHE_TYPE_INTERFACE, &u_scale, &v_scale, &array_index);
+
+		mouse_get_pos(&mousex, &mousey);
+		float mouse_unscaled_x = i2fl(mousex) / i2fl(gr_screen.max_w) * 2.0f - 1.0f;
+		float mouse_unscaled_y = i2fl(mousey) / i2fl(gr_screen.max_h) * -2.0f + 1.0f;
+		float mouse_unscaled_w = i2fl(mousew) / i2fl(gr_screen.max_w);
+		float mouse_unscaled_h = i2fl(mouseh) / i2fl(gr_screen.max_h);
+
+		float left = 2.0f * gr_screen.clip_aspect * mouse_unscaled_x;
+		float right = left + 4.0f * gr_screen.clip_aspect * mouse_unscaled_w;
+		float top = 2.0f * mouse_unscaled_y;
+		float bottom = top - 4.0f * mouse_unscaled_h;
+
+		GLfloat vmouse[4][5] = {
+			{
+				left, bottom, 4, 0, 1
+			},
+			{
+				right, bottom, 4, 1, 1
+			},
+			{
+				right, top, 4, 1, 0
+			},
+			{
+				left, top, 4, 0, 0
+			}
+		};
+		opengl_render_primitives_immediate(PRIM_TYPE_TRIFAN, &vert_def, 4, vmouse, sizeof(vmouse));
+	}
+
+	gr_end_proj_matrix();
+	gr_end_view_matrix();
+	gr_reset_clip();
+	glViewport(0, 0, gr_screen.max_w, gr_screen.max_h);
+
+	GL_state.Texture.Enable(0);
+	glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0);
+	glDrawBuffer(GL_NONE);
+
+	GL_state.PopFramebufferState();
+}
 
 bool gr_opengl_openxr_flip() {
 	if (!openxr_enabled())
@@ -635,114 +870,55 @@ bool gr_opengl_openxr_flip() {
 
 		//Monoframe mode: We only have one image that FSO just tried to flip. We have it in a readable texture which we'll now render as a flat plane in a fake 3D scene directly to the swapchain
 		if (xr_stage == OpenXRFBStage::NONE) {
-			GR_DEBUG_SCOPE("XR Plane");
-
-			GL_state.PushFramebufferState();
-			GL_state.BindFrameBuffer(xr_fbo);
-
-			glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, image.image, 0);
-			glDrawBuffer(GL_COLOR_ATTACHMENT0);
-			GL_state.Texture.Enable(0, GL_TEXTURE_2D, xr_swap_tex);
-			opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_COPY_WORLD, 0));
-			Current_shader->program->Uniforms.setTextureUniform("tex", 0);
-
-			const auto& pos = xr_views[i].pose.position;
-			const auto& ori = xr_views[i].pose.orientation;
-			vec3d position{{ { pos.x, pos.y, -pos.z } }};
-			position -= xr_offset;
-			matrix orientation;
-			vm_quaternion_to_matrix(&orientation, ori.x, ori.y, -ori.z, -ori.w);
-			
-			gr_set_clip(0, 0, xr_swapchains[i]->width, xr_swapchains[i]->height, GR_RESIZE_REPLACE);
-			gr_set_proj_matrix(asymmetric_fov {
-					xr_views[i].fov.angleLeft,
-					xr_views[i].fov.angleRight,
-					xr_views[i].fov.angleUp,
-					xr_views[i].fov.angleDown
-				}, i2fl(xr_swapchains[i]->width) / i2fl(xr_swapchains[i]->height), 0.01f, 1000);
-			gr_set_view_matrix(&position, &orientation);
-
-			glViewport(0, 0, xr_swapchains[i]->width, xr_swapchains[i]->height);
-			GL_state.ScissorTest(GL_FALSE);
-			GL_state.SetZbufferType(gr_zbuffer_type::ZBUFFER_TYPE_NONE);
-
-			GLfloat v[4][5] = {
-				{
-					-2.0f * gr_screen.clip_aspect, -2.0f, 4, 0, 0
-				},
-				{
-					2.0f * gr_screen.clip_aspect, -2.0f, 4, 1, 0
-				},
-				{
-					2.0f * gr_screen.clip_aspect, 2.0f, 4, 1, 1
-				},
-				{
-					-2.0f * gr_screen.clip_aspect, 2.0f, 4, 0, 1
-				}
-			};
-
-			vertex_layout vert_def;
-			vert_def.add_vertex_component(vertex_format_data::POSITION3, sizeof(GLfloat) * 5, 0);
-			vert_def.add_vertex_component(vertex_format_data::TEX_COORD2, sizeof(GLfloat) * 5, sizeof(GLfloat) * 3);
-
-			gr_matrix_set_uniforms();
-			// black surroundings around the menu / cutscene screen
-			gr_set_clear_color(0, 0, 0);
-			gr_clear();
-			gr_set_clear_color(0, 0, 0);
-			opengl_render_primitives_immediate(PRIM_TYPE_TRIFAN, &vert_def, 4, v, sizeof(v));
-
-			//And if we have a curser, it also needs to be put onscreen manually
-			if (io::mouse::CursorManager::get()->isCursorShown()) {
-				opengl_shader_set_current(gr_opengl_maybe_create_shader(SDR_TYPE_COPY_WORLD, SDR_FLAG_COPY_FROM_ARRAY));
-				Current_shader->program->Uniforms.setTextureUniform("tex", 0);
-				
-				float u_scale, v_scale;
-				uint32_t array_index;
-				int mouse_bm = io::mouse::CursorManager::get()->getCurrentCursor()->getBitmapHandle();
-				int mousex, mousey, mousew, mouseh;
-
-				bm_get_info(mouse_bm, &mousew, &mouseh);
-				gr_opengl_tcache_set(mouse_bm, TCACHE_TYPE_INTERFACE, &u_scale, &v_scale, &array_index);
-
-				mouse_get_pos(&mousex, &mousey);
-				float mouse_unscaled_x = i2fl(mousex) / i2fl(gr_screen.max_w) * 2.0f - 1.0f;
-				float mouse_unscaled_y = i2fl(mousey) / i2fl(gr_screen.max_h) * -2.0f + 1.0f;
-				float mouse_unscaled_w = i2fl(mousew) / i2fl(gr_screen.max_w);
-				float mouse_unscaled_h = i2fl(mouseh) / i2fl(gr_screen.max_h);
-
-				float left = 2.0f * gr_screen.clip_aspect * mouse_unscaled_x;
-				float right = left + 4.0f * gr_screen.clip_aspect * mouse_unscaled_w;
-				float top = 2.0f * mouse_unscaled_y;
-				float bottom = top - 4.0f * mouse_unscaled_h;
-
-				GLfloat vmouse[4][5] = {
-					{
-						left, bottom, 4, 0, 1
-					},
-					{
-						right, bottom, 4, 1, 1
-					},
-					{
-						right, top, 4, 1, 0
-					},
-					{
-						left, top, 4, 0, 0
+#ifdef __ANDROID__
+			if (xr_screen_swapchain == XR_NULL_HANDLE && !xr_screen_create_failed)
+				openxr_create_screen_swapchain();
+			const bool screenLayer = xr_screen_swapchain != XR_NULL_HANDLE && xr_screen_w == gr_screen.max_w && xr_screen_h == gr_screen.max_h;
+#else
+			const bool screenLayer = false;
+#endif
+			if (screenLayer) {
+#ifdef __ANDROID__
+				// the screen goes on its own quad layer (drawn once, seen from the plane's centre axis);
+				// the eyes only get black around it
+				if (i == startFrame) {
+					uint32_t sIndex = 0;
+					XrSwapchainImageAcquireInfo sAcquire{ XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+					if (xrAcquireSwapchainImage(xr_screen_swapchain, &sAcquire, &sIndex) == XR_SUCCESS) {
+						XrSwapchainImageWaitInfo sWait{ XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, nullptr, XR_INFINITE_DURATION };
+						xrWaitSwapchainImage(xr_screen_swapchain, &sWait);
+						const float ax = std::atan(0.5f * gr_screen.clip_aspect), ay = std::atan(0.5f);
+						openxr_draw_menu_plane(xr_screen_images[sIndex].image, xr_screen_w, xr_screen_h, vmd_zero_vector,
+							vmd_identity_matrix, asymmetric_fov{ -ax, ax, ay, -ay });
+						XrSwapchainImageReleaseInfo sRelease{ XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+						xrReleaseSwapchainImage(xr_screen_swapchain, &sRelease);
+						xr_screen_ready = true;
 					}
-				};
-				opengl_render_primitives_immediate(PRIM_TYPE_TRIFAN, &vert_def, 4, vmouse, sizeof(vmouse));
+				}
+				GL_state.PushFramebufferState();
+				GL_state.BindFrameBuffer(xr_fbo);
+				glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, image.image, 0);
+				glDrawBuffer(GL_COLOR_ATTACHMENT0);
+				glViewport(0, 0, xr_swapchains[i]->width, xr_swapchains[i]->height);
+				GL_state.ScissorTest(GL_FALSE);
+				GL_state.ColorMask(true, true, true, true);
+				glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+				glClear(GL_COLOR_BUFFER_BIT);
+				glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0);
+				glDrawBuffer(GL_NONE);
+				GL_state.PopFramebufferState();
+				glViewport(0, 0, gr_screen.max_w, gr_screen.max_h);
+#endif
+			} else {
+				const auto& pos = xr_views[i].pose.position;
+				const auto& ori = xr_views[i].pose.orientation;
+				vec3d position{{ { pos.x, pos.y, -pos.z } }};
+				position -= xr_offset;
+				matrix orientation;
+				vm_quaternion_to_matrix(&orientation, ori.x, ori.y, -ori.z, -ori.w);
+				openxr_draw_menu_plane(image.image, xr_swapchains[i]->width, xr_swapchains[i]->height, position, orientation,
+					asymmetric_fov{ xr_views[i].fov.angleLeft, xr_views[i].fov.angleRight, xr_views[i].fov.angleUp, xr_views[i].fov.angleDown });
 			}
-
-			gr_end_proj_matrix();
-			gr_end_view_matrix();
-			gr_reset_clip();
-			glViewport(0, 0, gr_screen.max_w, gr_screen.max_h);
-
-			GL_state.Texture.Enable(0);
-			glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, 0, 0);
-			glDrawBuffer(GL_NONE);
-
-			GL_state.PopFramebufferState();
 		}
 		//If we are in stereo mode, we just need to take the current backbuffer and blit it to the proper swapchain target
 		else {
@@ -811,17 +987,34 @@ bool gr_opengl_openxr_flip() {
 	};
 	auto pLayer = (const XrCompositionLayerBaseHeader*)&layer;
 #ifdef __ANDROID__
-	XrCompositionLayerQuad hudQuad{}, kbQuad{};
-	const XrCompositionLayerBaseHeader* layers[3] = { pLayer, nullptr, nullptr };
+	XrCompositionLayerQuad hudQuad{}, screenQuad{}, kbQuad{}, radialQuad[2]{};
+	const XrCompositionLayerBaseHeader* layers[6] = { pLayer, nullptr, nullptr, nullptr, nullptr, nullptr };
 	uint32_t layerCount = 1;
+	if (xr_screen_ready) {
+		screenQuad = openxr_screen_layer();
+		layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&screenQuad;
+	}
+	xr_screen_ready = false;
 	if (xr_hud_ready) {
 		hudQuad = openxr_hud_layer();
 		layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&hudQuad;
 	}
 	xr_hud_ready = false;
-	if (openxr_update_kb_layer()) {
-		kbQuad = openxr_kb_layer();
+	if (openxr_update_cpu_quad(xr_kb_quad, openxr_quest_keyboard_visible(),
+			[](uint8_t* px, bool force) { return openxr_quest_keyboard_render(px) || force; })) {
+		float pos[3], quat[4], size[2];
+		openxr_quest_keyboard_pose(pos, quat, size);
+		kbQuad = openxr_cpu_quad_layer(xr_kb_quad, pos, quat, size);
 		layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&kbQuad;
+	}
+	for (int hand = 0; hand < 2; hand++) {
+		float pos[3], quat[4], size[2];
+		const bool posed = openxr_quest_radial_visible(hand) && openxr_quest_radial_pose(hand, pos, quat, size);
+		if (openxr_update_cpu_quad(xr_radial_quad[hand], posed,
+				[hand](uint8_t* px, bool force) { return openxr_quest_radial_render(hand, px, force); })) {
+			radialQuad[hand] = openxr_cpu_quad_layer(xr_radial_quad[hand], pos, quat, size);
+			layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&radialQuad[hand];
+		}
 	}
 #endif
 

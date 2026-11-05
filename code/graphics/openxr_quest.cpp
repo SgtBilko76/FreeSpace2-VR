@@ -6,6 +6,7 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 
 #include <jni.h>
 #include <android/log.h>
+#include <sys/system_properties.h>
 #include <SDL3/SDL.h>
 
 #define XR_USE_PLATFORM_ANDROID
@@ -15,7 +16,10 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
 
 #include "graphics/2d.h"
+#include "graphics/render.h"
 #include "graphics/openxr_quest_keyboard.h"
+#include "graphics/openxr_quest_radial.h"
+#include "controlconfig/controlsconfig.h"
 #include "io/key.h"
 #include "io/mouse.h"
 #include "osapi/osapi.h"
@@ -44,7 +48,7 @@ SDL_Joystick* pad = nullptr;
 
 // previous button states for edge detection
 bool prevTrigger = false;
-bool prevA = false, prevB = false, prevMenu = false;
+bool prevA = false, prevB = false, prevX = false, prevY = false, prevMenu = false;
 int pointerHand = RIGHT;
 
 // keys injected this frame that must be released on the next update
@@ -52,7 +56,90 @@ SCP_vector<int> pendingKeyUps;
 
 // Throttle lever (0 = stop .. 1 = full), driven by the right stick Y and held where it is left
 float throttleLever = 0.0f;
-bool prevShiftStickUp = false, prevShiftStickDown = false;
+// Radial menu in flight: hold the left grip, point the left stick at an item, release the grip
+// to trigger it (stick centred = nothing). Clockwise from the top. An item sends a pad button
+// (bound in control_config_quest_touch_defaults) and/or up to two key presses (default keys).
+// The right grip stays the afterburner, so there is no right ring (RADIAL_RIGHT is empty).
+struct RadialItem {
+	const char* label;
+	int button; // SDL_GamepadButton or -1
+	int key, key2; // key codes or 0
+};
+const RadialItem RADIAL_LEFT[] = {
+	{ "Shields\nfront", SDL_GAMEPAD_BUTTON_START, 0, 0 },
+	{ "Next\ntarget", SDL_GAMEPAD_BUTTON_MISC1, 0, 0 },
+	{ "Target\nattacker", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1, 0, 0 },
+	{ "Next\nsubsystem", SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, 0, 0 },
+	{ "Counter-\nmeasure", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, 0, 0 },
+	{ "Nearest\nfriendly", -1, KEY_F, 0 },
+	{ "Escort\nship", -1, KEY_E, 0 },
+	{ "Bomb /\nbomber", -1, KEY_B, 0 },
+	{ "Shields\nrear", SDL_GAMEPAD_BUTTON_BACK, 0, 0 },
+	{ "Chase\nview", SDL_GAMEPAD_BUTTON_MISC2, 0, 0 },
+	{ "Comms\nmenu", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, 0, 0 },
+	{ "Warp\nout", SDL_GAMEPAD_BUTTON_MISC3, 0, 0 },
+	{ "Balance\npower", SDL_GAMEPAD_BUTTON_TOUCHPAD, 0, 0 },
+	{ "Power to\nengines", SDL_GAMEPAD_BUTTON_MISC6, 0, 0 },
+	{ "Power to\nshields", SDL_GAMEPAD_BUTTON_MISC5, 0, 0 },
+	{ "Power to\nweapons", SDL_GAMEPAD_BUTTON_MISC4, 0, 0 },
+};
+const RadialItem RADIAL_RIGHT[] = { { "", -1, 0, 0 } }; // unused (count 0)
+struct Ring {
+	const RadialItem* items;
+	int count;
+	bool open = false;      // shown (grip held long enough)
+	bool prevOpen = false;
+	int sel = -1;           // highlighted item, -1 = none (stick centred)
+	int pulseItem = -1, pulse = 0; // item whose pad button is held down for a few frames
+	int drawnSel = -2;      // selection in the last uploaded image (-2 = none yet)
+};
+Ring rings[2] = { { RADIAL_LEFT, static_cast<int>(sizeof(RADIAL_LEFT) / sizeof(RADIAL_LEFT[0])) },
+	{ RADIAL_RIGHT, 0 } };
+
+void pressKey(int key);
+
+// stick direction -> ring item (keeps the last one while the stick is between centre and the rim)
+void ringSelect(Ring& r, const XrVector2f& st)
+{
+	const float mag = std::sqrt(st.x * st.x + st.y * st.y);
+	if (mag > 0.5f) {
+		float ang = std::atan2(st.x, st.y); // clockwise from straight up
+		if (ang < 0.0f)
+			ang += 2.0f * PI;
+		r.sel = static_cast<int>(std::lround(ang / (2.0f * PI / r.count))) % r.count;
+	} else if (mag < 0.3f) {
+		r.sel = -1;
+	}
+}
+
+// ring closed: fire its highlighted item
+void ringRelease(Ring& r)
+{
+	if (r.prevOpen && !r.open && r.sel >= 0) {
+		const RadialItem& it = r.items[r.sel];
+		if (it.button >= 0) {
+			r.pulseItem = r.sel;
+			r.pulse = 2;
+		}
+		if (it.key)
+			pressKey(it.key);
+		if (it.key2)
+			pressKey(it.key2);
+	}
+	if (!r.open)
+		r.sel = -1;
+	r.prevOpen = r.open;
+}
+
+void ringsReset()
+{
+	for (auto& r : rings) {
+		r.open = r.prevOpen = false;
+		r.sel = r.pulseItem = -1;
+		r.pulse = 0;
+		r.drawnSel = -2;
+	}
+}
 bool prevCommsUp = false, prevCommsDown = false;
 float lastUpdateSeconds = -1.0f;
 // left stick click: tap = autopilot (sent on release), hold = warp out
@@ -273,8 +360,9 @@ bool pointerHitHud(int hand, float& mx, float& my)
 	if (u < -0.1f || u > 1.1f || v < -0.1f || v > 1.1f)
 		return false;
 
-	const float canvas_h = std::round(gr_screen.max_w / OPENXR_QUEST_HUD_ASPECT);
-	mx = std::max(0.0f, std::min(1.0f, u)) * (gr_screen.max_w - 1);
+	const float canvas_w = static_cast<float>(openxr_quest_hud_canvas_w());
+	const float canvas_h = std::round(canvas_w / OPENXR_QUEST_HUD_ASPECT);
+	mx = std::max(0.0f, std::min(1.0f, u)) * (canvas_w - 1);
 	my = std::max(0.0f, std::min(1.0f, v)) * (canvas_h - 1);
 	return true;
 }
@@ -432,11 +520,57 @@ void openxr_quest_keyboard_pose(float pos[3], float quat[4], float size[2])
 
 bool hasPerfSettings = false;
 bool hasPicoControllers = false; // XR_BD_controller_interaction (PICO runtimes)
+bool hasLayerSettings = false;   // XR_FB_composition_layer_settings: sharper text on the quad layers
+
+static int hudCanvasW = 0;
+
+void openxr_quest_set_hud_canvas_w(int w)
+{
+	if (w > 0) {
+		hudCanvasW = w;
+		return;
+	}
+	// HUD text needs about twice the eye resolution to be readable on the HUD layer. XR2 Gen 1
+	// headsets (Quest 2/Pro, PICO 4, Neo 3; "kona") get a bit less.
+	char platform[PROP_VALUE_MAX] = {};
+	__system_property_get("ro.board.platform", platform);
+	hudCanvasW = (strcmp(platform, "kona") == 0) ? 1600 : 2048;
+	char over[PROP_VALUE_MAX] = {};
+	if (__system_property_get("debug.questvr.hudw", over) > 0 && atoi(over) >= 640)
+		hudCanvasW = atoi(over);
+	QLOG("HUD canvas width %d", hudCanvasW);
+}
+
+bool openxr_quest_test_flash()
+{
+	char v[PROP_VALUE_MAX] = {};
+	return __system_property_get("debug.questvr.flash", v) > 0 && v[0] == '1';
+}
+
+float openxr_quest_hud_text_scale()
+{
+	// test override: setprop debug.questvr.hudtext 1.6
+	char v[PROP_VALUE_MAX] = {};
+	if (__system_property_get("debug.questvr.hudtext", v) > 0 && atof(v) >= 0.5)
+		return static_cast<float>(atof(v));
+	return 1.4f;
+}
+
+int openxr_quest_hud_canvas_w()
+{
+	return hudCanvasW > 0 ? hudCanvasW : gr_screen.max_w;
+}
+
+bool openxr_quest_has_layer_settings()
+{
+	return hasLayerSettings;
+}
 
 SCP_vector<const char*> openxr_quest_instance_extensions()
 {
 	// Only request what the runtime offers; an unknown extension fails xrCreateInstance
-	SCP_vector<const char*> wanted = { XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME, "XR_BD_controller_interaction" };
+	SCP_vector<const char*> wanted = { XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME, "XR_BD_controller_interaction",
+		"XR_FB_composition_layer_settings" };
 	SCP_vector<const char*> out;
 
 	uint32_t count = 0;
@@ -453,12 +587,14 @@ SCP_vector<const char*> openxr_quest_instance_extensions()
 					hasPerfSettings = true;
 				else if (!strcmp(w, "XR_BD_controller_interaction"))
 					hasPicoControllers = true;
+				else if (!strcmp(w, "XR_FB_composition_layer_settings"))
+					hasLayerSettings = true;
 				break;
 			}
 		}
 	}
-	QLOG("optional OpenXR extensions: performance_settings %d, PICO controllers %d", hasPerfSettings ? 1 : 0,
-		hasPicoControllers ? 1 : 0);
+	QLOG("optional OpenXR extensions: performance_settings %d, PICO controllers %d, layer settings %d",
+		hasPerfSettings ? 1 : 0, hasPicoControllers ? 1 : 0, hasLayerSettings ? 1 : 0);
 	return out;
 }
 
@@ -614,19 +750,29 @@ void openxr_quest_update(bool stereo_frame)
 				SDL_SetJoystickVirtualButton(pad, b, down);
 		};
 
-		// right stick Y: throttle lever (full sweep in about one second); with the grip: full / stop
-		if (shift) {
-			const bool up = stR.y > 0.7f, downs = stR.y < -0.7f;
-			if (up && !prevShiftStickUp)
-				throttleLever = 1.0f;
-			if (downs && !prevShiftStickDown)
-				throttleLever = 0.0f;
-			prevShiftStickUp = up;
-			prevShiftStickDown = downs;
-		} else {
-			prevShiftStickUp = prevShiftStickDown = false;
-			if (std::fabs(stR.y) > 0.15f)
-				throttleLever = std::max(0.0f, std::min(1.0f, throttleLever + stR.y * dt));
+		// right stick Y: throttle lever (full sweep in about one second)
+		if (std::fabs(stR.y) > 0.15f)
+			throttleLever = std::max(0.0f, std::min(1.0f, throttleLever + stR.y * dt));
+
+		// left ring: open while the left grip is held (not while the comms menu is up)
+		const bool radial = shift && !comms;
+		rings[LEFT].open = radial;
+		if (rings[LEFT].open)
+			ringSelect(rings[LEFT], stL);
+		ringRelease(rings[LEFT]);
+		{
+			// test hook: `adb shell setprop debug.questvr.radial <item>` shows the ring with the item
+			// highlighted (-1 = none); `setprop debug.questvr.radial ""` hides it again. Shown only,
+			// never triggered.
+			char v[PROP_VALUE_MAX] = {};
+			if (__system_property_get("debug.questvr.radial", v) > 0) {
+				const int h = LEFT;
+				Ring& r = rings[h];
+				if (!r.prevOpen) {
+					r.open = true;
+					r.sel = std::max(-1, std::min(r.count - 1, atoi(v)));
+				}
+			}
 		}
 
 		// comms menu open: left stick up/down moves the selection, a trigger or A picks it
@@ -639,8 +785,9 @@ void openxr_quest_update(bool stereo_frame)
 		prevCommsDown = comms && stL.y < -0.6f;
 
 		if (pad) {
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, comms ? 0 : axisValue(stL.x));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, comms ? 0 : axisValue(-stL.y));
+			// the left stick points into the radial menu while it is open, so it doesn't steer then
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, (comms || radial) ? 0 : axisValue(stL.x));
+			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, (comms || radial) ? 0 : axisValue(-stL.y));
 			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, axisValue(stR.x));
 			// absolute throttle axis: up (-32767) = full speed, down (+32767) = stop
 			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, axisValue(1.0f - 2.0f * throttleLever));
@@ -648,13 +795,13 @@ void openxr_quest_update(bool stereo_frame)
 			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, comms ? 0 : triggerValue(trigR));
 		}
 
-		const bool normal = !shift && !comms;
+		const bool normal = !comms;
 		btn(SDL_GAMEPAD_BUTTON_SOUTH, normal && a);
 		btn(SDL_GAMEPAD_BUTTON_EAST, normal && b);
 		btn(SDL_GAMEPAD_BUTTON_WEST, normal && x);
 		btn(SDL_GAMEPAD_BUTTON_NORTH, normal && y);
-		// left stick click: short tap = autopilot, held for WARP_HOLD_SECONDS = warp out
-		if (normal && clickL) {
+		// left stick click: short tap = autopilot (pad LEFT_STICK), held for WARP_HOLD_SECONDS = warp out
+		if (normal && !radial && clickL) {
 			if (clickLDownSince < 0.0f) {
 				clickLDownSince = now;
 				clickLWarpSent = false;
@@ -674,16 +821,21 @@ void openxr_quest_update(bool stereo_frame)
 		if (warpPulse > 0)
 			warpPulse--;
 		btn(SDL_GAMEPAD_BUTTON_RIGHT_STICK, normal && clickR);
-		btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, gripR > 0.5f);
-		btn(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, false);
+		btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, normal && gripR > 0.5f); // afterburner while held
 
-		// second layer (left grip held)
-		btn(SDL_GAMEPAD_BUTTON_MISC1, shift && a);
-		btn(SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1, shift && b);
-		btn(SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, shift && x);
-		btn(SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, (shift || comms) && y); // also closes the comms menu
-		btn(SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, shift && clickL);
-		btn(SDL_GAMEPAD_BUTTON_MISC2, shift && clickR); // chase view on / off
+		// ring pad buttons (one short press each); Y also closes an open comms menu
+		for (auto& r : rings) {
+			for (int i = 0; i < r.count; i++) {
+				if (r.items[i].button < 0)
+					continue;
+				bool down = r.pulse > 0 && r.pulseItem == i;
+				if (r.items[i].button == SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2)
+					down = down || (comms && y);
+				btn(static_cast<SDL_GamepadButton>(r.items[i].button), down);
+			}
+			if (r.pulse > 0 && --r.pulse == 0)
+				r.pulseItem = -1;
+		}
 
 		// comms menu
 		btn(SDL_GAMEPAD_BUTTON_DPAD_UP, commsUp);
@@ -700,6 +852,7 @@ void openxr_quest_update(bool stereo_frame)
 		lastUpdateSeconds = -1.0f;
 		clickLDownSince = -1.0f;
 		autopilotPulse = warpPulse = 0;
+		ringsReset();
 		setPadNeutral();
 
 		// the hand that pulls its trigger takes over the pointer
@@ -732,11 +885,161 @@ void openxr_quest_update(bool stereo_frame)
 	}
 	prevA = a;
 	prevB = b;
+	prevX = x;
+	prevY = y;
+}
+
+// How to do a control on the Touch controllers, for the training hints ("Press $T$"): a button
+// name, a radial menu item or a throttle position; nullptr = no controller equivalent.
+const char* openxr_quest_control_hint(int control, int scancode)
+{
+	static SCP_string out;
+	auto ringHint = [](int hand, const RadialItem& it) {
+		out = it.label;
+		// "Flood-\nlight" -> "Floodlight", "Next\ntarget" -> "Next target"
+		SCP_string s;
+		for (char ch : out) {
+			if (ch == '\n' && !s.empty() && s.back() == '-')
+				s.pop_back();
+			else
+				s += (ch == '\n') ? ' ' : ch;
+		}
+		out = s;
+		out += " (left grip ring)";
+		return out.c_str();
+	};
+	if (control >= 0 && control < static_cast<int>(Control_config.size())) {
+		switch (control) {
+		case FORWARD_THRUST: return "right stick up (throttle)";
+		case REVERSE_THRUST: return "right stick down (throttle)";
+		case ZERO_THROTTLE: return "right stick all the way down";
+		case MAX_THROTTLE: return "right stick all the way up";
+		case ONE_THIRD_THROTTLE: return "right stick to one third";
+		case TWO_THIRDS_THROTTLE: return "right stick to two thirds";
+		case END_MISSION: return "left stick click (hold 1 s)";
+		default: break;
+		}
+		const auto& cc = Control_config[control];
+		auto joyBtn = [&cc](int b) {
+			for (const CC_bind* x : { &cc.first, &cc.second })
+				if (x->get_cid() == CID_JOY0 && !(x->get_flags() & CCF_AXIS) && x->get_btn() == b)
+					return true;
+			return false;
+		};
+		auto keyBind = [&cc](int k) {
+			for (const CC_bind* x : { &cc.first, &cc.second })
+				if (x->get_cid() == CID_KEYBOARD && x->get_btn() == k)
+					return true;
+			return false;
+		};
+		static const struct { int btn; const char* name; } direct[] = {
+			{ SDL_GAMEPAD_BUTTON_COUNT + 1, "right trigger" },
+			{ SDL_GAMEPAD_BUTTON_COUNT + 0, "left trigger" },
+			{ SDL_GAMEPAD_BUTTON_SOUTH, "A" },
+			{ SDL_GAMEPAD_BUTTON_EAST, "B" },
+			{ SDL_GAMEPAD_BUTTON_WEST, "X" },
+			{ SDL_GAMEPAD_BUTTON_NORTH, "Y" },
+			{ SDL_GAMEPAD_BUTTON_LEFT_STICK, "left stick click" },
+			{ SDL_GAMEPAD_BUTTON_RIGHT_STICK, "right stick click" },
+			{ SDL_GAMEPAD_BUTTON_MISC3, "left stick click (hold 1 s)" },
+		};
+		for (const auto& d : direct)
+			if (joyBtn(d.btn))
+				return d.name;
+		if (joyBtn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER))
+			return "right grip (hold)";
+		for (int h = 0; h < 2; h++)
+			for (int i = 0; i < rings[h].count; i++) {
+				const RadialItem& it = rings[h].items[i];
+				if ((it.button >= 0 && joyBtn(it.button)) || (it.key && keyBind(it.key)) || (it.key2 && keyBind(it.key2)))
+					return ringHint(h, it);
+			}
+	}
+	if (scancode > 0)
+		for (int h = 0; h < 2; h++)
+			for (int i = 0; i < rings[h].count; i++) {
+				const RadialItem& it = rings[h].items[i];
+				if (it.key == scancode || it.key2 == scancode)
+					return ringHint(h, it);
+			}
+	return nullptr;
+}
+
+bool openxr_quest_radial_visible(int hand)
+{
+	return rings[hand].open;
+}
+
+bool openxr_quest_radial_render(int hand, uint8_t* rgba, bool force)
+{
+	Ring& r = rings[hand];
+	if (!force && r.drawnSel == r.sel)
+		return false;
+	const char* labels[32];
+	for (int i = 0; i < r.count && i < 32; i++)
+		labels[i] = r.items[i].label;
+	VrRadial_Render(rgba, labels, std::min(r.count, 32), r.sel, 0.0f, 0.0f);
+	r.drawnSel = r.sel;
+	return true;
+}
+
+bool openxr_quest_radial_pose(int hand, float pos[3], float quat[4], float size[2])
+{
+	// above the controller, turned to face the head
+	XrVector3f p;
+	char testProp[PROP_VALUE_MAX] = {};
+	if (__system_property_get("debug.questvr.radial", testProp) > 0) {
+		// test hook (see openxr_quest_update): 45 cm in front of the head, a bit to the side and down
+		const XrVector3f f = rotate(xr_views[0].pose.orientation, XrVector3f{ hand == LEFT ? -0.12f : 0.12f, -0.08f, -0.45f });
+		p = XrVector3f{ xr_views[0].pose.position.x + f.x, xr_views[0].pose.position.y + f.y, xr_views[0].pose.position.z + f.z };
+	} else {
+		if (aimSpace[hand] == XR_NULL_HANDLE)
+			return false;
+		XrSpaceLocation loc{ XR_TYPE_SPACE_LOCATION };
+		if (xrLocateSpace(aimSpace[hand], xr_space, xr_state.predictedDisplayTime, &loc) != XR_SUCCESS)
+			return false;
+		if (!(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+			return false;
+		const XrVector3f fwd = rotate(loc.pose.orientation, XrVector3f{ 0.0f, 0.0f, -1.0f });
+		p = XrVector3f{ loc.pose.position.x + fwd.x * 0.04f, loc.pose.position.y + 0.11f, loc.pose.position.z + fwd.z * 0.04f };
+	}
+	const XrVector3f head{ (xr_views[0].pose.position.x + xr_views[1].pose.position.x) * 0.5f,
+		(xr_views[0].pose.position.y + xr_views[1].pose.position.y) * 0.5f,
+		(xr_views[0].pose.position.z + xr_views[1].pose.position.z) * 0.5f };
+	XrVector3f n{ head.x - p.x, head.y - p.y, head.z - p.z };
+	const float len = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+	if (len < 0.01f)
+		return false;
+	n = XrVector3f{ n.x / len, n.y / len, n.z / len };
+	// quad normal (+z) toward the head: pitch about X, then yaw about Y
+	const float pitch = -std::asin(std::max(-1.0f, std::min(1.0f, n.y)));
+	const float yaw = std::atan2(n.x, n.z);
+	const float sx = std::sin(pitch * 0.5f), cx = std::cos(pitch * 0.5f);
+	const float sy = std::sin(yaw * 0.5f), cy = std::cos(yaw * 0.5f);
+	pos[0] = p.x;
+	pos[1] = p.y;
+	pos[2] = p.z;
+	quat[0] = cy * sx;
+	quat[1] = cx * sy;
+	quat[2] = -sy * sx;
+	quat[3] = cy * cx;
+	size[0] = 0.26f;
+	size[1] = 0.26f * VR_RADIAL_H / VR_RADIAL_W;
+	return true;
 }
 
 #else
 
 SCP_vector<const char*> openxr_quest_instance_extensions() { return {}; }
+bool openxr_quest_radial_visible(int) { return false; }
+const char* openxr_quest_control_hint(int, int) { return nullptr; }
+bool openxr_quest_has_layer_settings() { return false; }
+void openxr_quest_set_hud_canvas_w(int) {}
+int openxr_quest_hud_canvas_w() { return gr_screen.max_w; }
+float openxr_quest_hud_text_scale() { return 1.0f; }
+bool openxr_quest_test_flash() { return false; }
+bool openxr_quest_radial_render(int, uint8_t*, bool) { return false; }
+bool openxr_quest_radial_pose(int, float[3], float[4], float[2]) { return false; }
 bool openxr_quest_hud_begin() { return false; }
 float openxr_quest_hud_half_fov() { return 0.0f; }
 void openxr_quest_hud_end() {}

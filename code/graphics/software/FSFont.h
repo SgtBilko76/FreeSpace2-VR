@@ -9,6 +9,9 @@
 void removeFontMultiplierOption();
 
 float get_font_scale_factor();
+float get_font_scale_factor(bool can_scale);
+// Extra text size factor while the VR HUD layer is drawn (1 otherwise); line heights follow it too
+extern float Font_vr_hud_scale;
 
 float calculate_auto_font_size(float current_size);
 

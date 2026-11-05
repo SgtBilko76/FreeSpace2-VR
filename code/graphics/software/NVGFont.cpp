@@ -115,7 +115,7 @@ namespace font
 		path->saveState();
 		path->resetState();
 
-		float scale_factor = (canScale && !Fred_running) ? get_font_scale_factor() : 1.0f;
+		float scale_factor = (!Fred_running) ? get_font_scale_factor(canScale) : 1.0f;
 		scale_factor *= scaleMultiplier;
 
 		path->fontFaceId(m_handle);

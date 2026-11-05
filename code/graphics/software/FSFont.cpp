@@ -22,9 +22,19 @@ void removeFontMultiplierOption()
 	options::OptionsManager::instance()->removeOption(FontScaleFactor);
 }
 
+// Extra factor while the VR HUD layer is drawn (its canvas spans the whole field of view, so
+// the HUD's small fonts need to be larger there); 1 everywhere else
+float Font_vr_hud_scale = 1.0f;
+
 float get_font_scale_factor()
 {
-	return FontScaleFactor->getValue();
+	return FontScaleFactor->getValue() * Font_vr_hud_scale;
+}
+
+// Scale for a font: the user's font size option only for fonts that allow it, the VR HUD factor for all
+float get_font_scale_factor(bool can_scale)
+{
+	return (can_scale ? FontScaleFactor->getValue() : 1.0f) * Font_vr_hud_scale;
 }
 
 // Calculate the font size based on the current screen resolution to provide a similar size on all resolutions

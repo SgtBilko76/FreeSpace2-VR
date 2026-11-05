@@ -7,6 +7,9 @@
  *
 */
 
+#ifdef __ANDROID__
+#include "graphics/openxr_quest.h"
+#endif
 #include <cstdio>
 #include <cstdarg>
 #include <exception>
@@ -620,12 +623,46 @@ int translate_key_to_index(const char *key, bool find_override)
 	return -1;
 }
 
+#ifdef __ANDROID__
+// "Alt-Q" -> KEY_ALTED | KEY_Q (Scan_code_text_english names); -1 if unknown
+static int key_name_to_scancode(const char *key)
+{
+	int mods = 0;
+	if (!strnicmp(key, "Alt", 3)) {
+		mods |= KEY_ALTED;
+		key += 3;
+		if (*key)
+			key++;
+	}
+	if (!strnicmp(key, "Shift", 5)) {
+		mods |= KEY_SHIFTED;
+		key += 5;
+		if (*key)
+			key++;
+	}
+	const int n = sizeof(Scan_code_text_english) / sizeof(char *);
+	for (int i = 0; i < n && *key; i++)
+		if (!stricmp(key, Scan_code_text_english[i]))
+			return i | mods;
+	return -1;
+}
+#endif
+
 const char *translate_key(char *key)
 {
 	int index = -1;
 	static char text[BTN_MSG_LEN] = {""};
 
 	index = translate_key_to_index(key, false);
+#ifdef __ANDROID__
+	// Quest: name the controller button / radial menu item instead of the keyboard key
+	if (const char *hint = openxr_quest_control_hint(index, key_name_to_scancode(key))) {
+		if (index >= 0)
+			Failed_key_index = index;
+		strcpy_s(text, hint);
+		return text;
+	}
+#endif
 	if (index < 0) {
 		return nullptr;
 	}
@@ -1941,16 +1978,23 @@ static void control_config_quest_touch_defaults(CC_preset& preset)
 	button(CYCLE_SECONDARY, SDL_GAMEPAD_BUTTON_WEST);                       // X
 	button(CYCLE_NEXT_PRIMARY, SDL_GAMEPAD_BUTTON_NORTH);                   // Y
 	button(AUTO_PILOT_TOGGLE, SDL_GAMEPAD_BUTTON_LEFT_STICK);               // left stick click (tap)
-	button(END_MISSION, SDL_GAMEPAD_BUTTON_MISC3);                          // left stick click held 1 s: warp out
+	button(END_MISSION, SDL_GAMEPAD_BUTTON_MISC3);                          // left stick click held 1 s / ring: warp out
 	button(MATCH_TARGET_SPEED, SDL_GAMEPAD_BUTTON_RIGHT_STICK);             // right stick click
 
-	// Second layer (left grip held)
-	button(TARGET_NEXT, SDL_GAMEPAD_BUTTON_MISC1);                          // grip + A
-	button(TARGET_CLOSEST_SHIP_ATTACKING_TARGET, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1); // grip + B
-	button(TARGET_NEXT_SUBOBJECT, SDL_GAMEPAD_BUTTON_LEFT_PADDLE1);         // grip + X
-	button(SQUADMSG_MENU, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2);                // grip + Y
-	button(PADLOCK_DOWN, SDL_GAMEPAD_BUTTON_LEFT_PADDLE2);                  // grip + left stick click (view rear)
-	button(VIEW_CHASE, SDL_GAMEPAD_BUTTON_MISC2);                           // grip + right stick click (chase view)
+	// Radial menu (left grip held, left stick points, release the grip): see RADIAL_LEFT in
+	// graphics/openxr_quest.cpp, which sends these pad buttons (and default keys F, E, B)
+	button(TARGET_NEXT, SDL_GAMEPAD_BUTTON_MISC1);
+	button(TARGET_CLOSEST_SHIP_ATTACKING_TARGET, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1);
+	button(TARGET_NEXT_SUBOBJECT, SDL_GAMEPAD_BUTTON_LEFT_PADDLE1);
+	button(SQUADMSG_MENU, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2);                // also Y while the comms menu is open
+	button(VIEW_CHASE, SDL_GAMEPAD_BUTTON_MISC2);
+	button(LAUNCH_COUNTERMEASURE, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+	button(INCREASE_WEAPON, SDL_GAMEPAD_BUTTON_MISC4);
+	button(INCREASE_SHIELD, SDL_GAMEPAD_BUTTON_MISC5);
+	button(INCREASE_ENGINE, SDL_GAMEPAD_BUTTON_MISC6);
+	button(ETS_EQUALIZE, SDL_GAMEPAD_BUTTON_TOUCHPAD);
+	button(SHIELD_XFER_TOP, SDL_GAMEPAD_BUTTON_START);                      // shields front
+	button(SHIELD_XFER_BOTTOM, SDL_GAMEPAD_BUTTON_BACK);                    // shields rear
 
 	// Comms menu navigation (sent only while the comms menu is open)
 	button(COMMS_MENU_MOVE_UP, SDL_GAMEPAD_BUTTON_DPAD_UP);

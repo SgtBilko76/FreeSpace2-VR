@@ -759,7 +759,7 @@ int gr_get_font_height()
 {
 	if (FontManager::isReady())
 	{
-		return fl2i(FontManager::getCurrentFont()->getHeight());
+		return fl2i(FontManager::getCurrentFont()->getHeight() * Font_vr_hud_scale);
 	}
 	else
 	{

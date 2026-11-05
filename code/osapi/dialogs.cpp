@@ -15,6 +15,51 @@ extern "C" {
 #include <lualib.h>
 }
 
+#ifdef __ANDROID__
+#include <jni.h>
+#include <unistd.h>
+#include <SDL3/SDL_system.h>
+
+namespace
+{
+	// Quest / Android VR: an SDL message box is a 2D window that the player cannot see from inside the
+	// immersive app. The headset only beeps and the game seems to quit. Fatal errors go to the
+	// activity's static showFatalError(String) instead (FotG: a 2D error panel in its own process);
+	// warnings and Lua errors are only logged and the game continues.
+	bool android_show_fatal_error(const char* text)
+	{
+		JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+		jobject activity = (jobject)SDL_GetAndroidActivity();
+		if (env == nullptr || activity == nullptr)
+			return false;
+		bool shown = false;
+		jclass cls = env->GetObjectClass(activity);
+		jmethodID m = env->GetStaticMethodID(cls, "showFatalError", "(Ljava/lang/String;)V");
+		if (env->ExceptionCheck()) {
+			env->ExceptionClear();
+			m = nullptr;
+		}
+		if (m != nullptr) {
+			// NewStringUTF wants modified UTF-8; table text can hold Latin-1 bytes
+			SCP_string ascii(text);
+			for (auto& c : ascii)
+				if ((unsigned char)c >= 0x80)
+					c = '?';
+			jstring jtext = env->NewStringUTF(ascii.c_str());
+			env->CallStaticVoidMethod(cls, m, jtext);
+			if (env->ExceptionCheck())
+				env->ExceptionClear();
+			else
+				shown = true;
+			env->DeleteLocalRef(jtext);
+		}
+		env->DeleteLocalRef(cls);
+		env->DeleteLocalRef(activity);
+		return shown;
+	}
+}
+#endif
+
 namespace
 {
 	const char* Separator = "------------------------------------------------------------------\n";
@@ -200,6 +245,11 @@ namespace os
 				return;
 			}
 
+#ifdef __ANDROID__
+			// no message box in VR (see android_show_fatal_error): logged above, the game continues
+			return;
+#endif
+
 			if (Cmdline_noninteractive) {
 				throw LuaErrorException(msgStream.str());
 				return;
@@ -296,6 +346,14 @@ namespace os
 				return;
 			}
 
+#ifdef __ANDROID__
+			if (android_show_fatal_error(text)) {
+				mprintf(("Fatal error handed to the error panel; exiting\n"));
+				SDL_Delay(1500); // let the panel's process start before this one goes away
+				_exit(1);
+			}
+#endif
+
 			SCP_stringstream messageStream;
 			messageStream << text << "\n";
 			messageStream << dump_stacktrace();
@@ -368,6 +426,11 @@ namespace os
 			if (Cmdline_noninteractive) {
 				return;
 			}
+
+#ifdef __ANDROID__
+			// no message box in VR (see android_show_fatal_error): logged above, the game continues
+			return;
+#endif
 
 			SCP_stringstream boxMsgStream;
 			boxMsgStream << "Warning: " << text << "\n";

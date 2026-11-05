@@ -843,6 +843,11 @@ static void set_dead_view_letterbox_clip()
  * Call once a frame to diminish the flash effect to 0.
  * @param frametime Period over which to dimish at ::DIMINISH_RATE
  */
+// Quest: the colour flash (hits, big explosions, sun glare) of the current frame, drawn into both
+// eye images instead of the HUD layer so it fills the whole view (see game_render_vr_flash)
+static int Game_vr_flash_rgb[3] = { 0, 0, 0 };
+static bool Game_vr_flash_to_eyes = false;
+
 static void game_flash_diminish(float frametime)
 {
 	float dec_amount = frametime*DIMINISH_RATE;
@@ -921,7 +926,11 @@ static void game_flash_diminish(float frametime)
 		if ( g < 0 ) g = 0; else if ( g > 255 ) g = 255;
 		if ( b < 0 ) b = 0; else if ( b > 255 ) b = 255;
 
-		if ( (r!=0) || (g!=0) || (b!=0) ) {
+		if (Game_vr_flash_to_eyes) {
+			Game_vr_flash_rgb[0] = r;
+			Game_vr_flash_rgb[1] = g;
+			Game_vr_flash_rgb[2] = b;
+		} else if ( (r!=0) || (g!=0) || (b!=0) ) {
 			// the letterbox bars are drawn earlier in the frame, but game_render_hud calls gr_reset_clip()
 			// before this runs, so the flash would paint over the bars unless we re-apply the letterbox clip
 			bool letterbox_active = (Game_mode & GM_DEAD) || (supernova_stage() >= SUPERNOVA_STAGE::HIT);
@@ -4263,25 +4272,54 @@ static bool Game_vr_hud_layer = false;
 // gauge layouts are 4:3 and would otherwise be stretched onto the square eye image.
 // The screen-scale globals FSO resizes 2D drawing with (graphics/2d.cpp); recomputed for the canvas
 // so menu-style UI (the death popup) and the text clipping it relies on match the canvas size
+extern float Gr_save_full_resize_X, Gr_save_full_center_resize_X, Gr_save_resize_X;
+extern float Gr_save_menu_offset_X, Gr_save_menu_zoomed_offset_X;
 extern float Gr_save_full_resize_Y, Gr_save_full_center_resize_Y, Gr_save_resize_Y;
 extern float Gr_save_menu_offset_Y, Gr_save_menu_zoomed_offset_Y;
+extern float Font_vr_hud_scale;
 
 struct vr_hud_canvas {
-	int max_h, max_h_unscaled, max_h_unscaled_zoomed, center_h, center_offset_y;
+	// The HUD layer canvas: openxr_quest_hud_canvas_w() wide (usually larger than the eye images, so
+	// HUD text is readable) and 4:3. Everything the HUD positions and scales by is switched to it.
+	int max_w, max_h, max_h_unscaled, max_h_unscaled_zoomed, center_w, center_h, center_offset_x, center_offset_y;
+	float full_resize_x, full_center_resize_x, resize_x, resize_y, menu_offset_x, menu_zoomed_offset_x;
 	float full_resize_y, full_center_resize_y, menu_offset_y, menu_zoomed_offset_y;
 	vr_hud_canvas()
 	{
+		max_w = gr_screen.max_w;
 		max_h = gr_screen.max_h;
 		max_h_unscaled = gr_screen.max_h_unscaled;
 		max_h_unscaled_zoomed = gr_screen.max_h_unscaled_zoomed;
+		center_w = gr_screen.center_w;
 		center_h = gr_screen.center_h;
+		center_offset_x = gr_screen.center_offset_x;
 		center_offset_y = gr_screen.center_offset_y;
+		full_resize_x = Gr_save_full_resize_X;
+		full_center_resize_x = Gr_save_full_center_resize_X;
+		resize_x = Gr_save_resize_X;
+		resize_y = Gr_save_resize_Y;
+		menu_offset_x = Gr_save_menu_offset_X;
+		menu_zoomed_offset_x = Gr_save_menu_zoomed_offset_X;
 		full_resize_y = Gr_save_full_resize_Y;
 		full_center_resize_y = Gr_save_full_center_resize_Y;
 		menu_offset_y = Gr_save_menu_offset_Y;
 		menu_zoomed_offset_y = Gr_save_menu_zoomed_offset_Y;
 
-		const int h = static_cast<int>(std::lround(gr_screen.max_w / OPENXR_QUEST_HUD_ASPECT));
+		// width: scale everything horizontal (and the uniform resize factors) by the canvas size
+		const int w = openxr_quest_hud_canvas_w();
+		const float k = i2fl(w) / i2fl(gr_screen.max_w);
+		gr_screen.max_w = w;
+		gr_screen.center_w = static_cast<int>(std::lround(gr_screen.center_w * k));
+		gr_screen.center_offset_x = static_cast<int>(std::lround(gr_screen.center_offset_x * k));
+		Gr_save_full_resize_X *= k;
+		Gr_save_full_center_resize_X *= k;
+		Gr_save_resize_X *= k;
+		Gr_save_resize_Y *= k;
+		Gr_save_menu_offset_X *= k;
+		Gr_save_menu_zoomed_offset_X *= k;
+
+		// height: 4:3
+		const int h = static_cast<int>(std::lround(w / OPENXR_QUEST_HUD_ASPECT));
 		gr_screen.max_h = h;
 		gr_screen.max_h_unscaled = static_cast<int>(std::lround(gr_screen.max_w_unscaled / OPENXR_QUEST_HUD_ASPECT));
 		gr_screen.max_h_unscaled_zoomed = static_cast<int>(std::lround(gr_screen.max_w_unscaled_zoomed / OPENXR_QUEST_HUD_ASPECT));
@@ -4293,14 +4331,25 @@ struct vr_hud_canvas {
 		gr_reset_screen_scale();
 		gr_reset_clip();
 		gr_setup_viewport();
+		Font_vr_hud_scale = openxr_quest_hud_text_scale();
 	}
 	~vr_hud_canvas()
 	{
+		Font_vr_hud_scale = 1.0f;
+		gr_screen.max_w = max_w;
 		gr_screen.max_h = max_h;
 		gr_screen.max_h_unscaled = max_h_unscaled;
 		gr_screen.max_h_unscaled_zoomed = max_h_unscaled_zoomed;
+		gr_screen.center_w = center_w;
 		gr_screen.center_h = center_h;
+		gr_screen.center_offset_x = center_offset_x;
 		gr_screen.center_offset_y = center_offset_y;
+		Gr_save_full_resize_X = full_resize_x;
+		Gr_save_full_center_resize_X = full_center_resize_x;
+		Gr_save_resize_X = resize_x;
+		Gr_save_resize_Y = resize_y;
+		Gr_save_menu_offset_X = menu_offset_x;
+		Gr_save_menu_zoomed_offset_X = menu_zoomed_offset_x;
 		Gr_save_full_resize_Y = full_resize_y;
 		Gr_save_full_center_resize_Y = full_center_resize_y;
 		Gr_save_menu_offset_Y = menu_offset_y;
@@ -4426,6 +4475,10 @@ void game_do_full_frame(DEBUG_TIMER_SIG const vec3d* offset = nullptr, const mat
 
 	if (!Game_vr_hud_layer) {
 		game_show_time_left();
+	} else if (Game_vr_flash_rgb[0] || Game_vr_flash_rgb[1] || Game_vr_flash_rgb[2]) {
+		// Quest: the hit / explosion flash over the whole eye image (worked out in the HUD pass)
+		gr_reset_clip();
+		gr_flash(Game_vr_flash_rgb[0], Game_vr_flash_rgb[1], Game_vr_flash_rgb[2]);
 	}
 
 	gr_reset_clip();
@@ -4566,7 +4619,12 @@ void game_frame(bool paused)
 				// Quest: HUD once, on its own cockpit-fixed layer; the eyes get the scene only
 				if (openxr_quest_hud_begin()) {
 					util::Random::seed(random);
+					Game_vr_flash_to_eyes = true;
+					Game_vr_flash_rgb[0] = Game_vr_flash_rgb[1] = Game_vr_flash_rgb[2] = 0;
 					game_render_vr_hud_layer();
+					Game_vr_flash_to_eyes = false;
+					if (openxr_quest_test_flash())
+						Game_vr_flash_rgb[0] = 160; // test hook: setprop debug.questvr.flash 1
 					openxr_quest_hud_end();
 					Game_vr_hud_layer = true;
 				}

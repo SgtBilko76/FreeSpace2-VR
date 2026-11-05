@@ -36,6 +36,21 @@ public class FS2Activity extends SDLActivity {
     public static void disableOverlay() { }
     public static void setOverlayOpacity(float opacity) { }
 
+    /**
+     * Called by the engine (dialogs.cpp, Error / Assert) on its own thread right before it exits:
+     * an SDL message box can't be seen inside VR, so show the error on a 2D panel that runs in its
+     * own process (ErrorActivity) and survives this one.
+     */
+    public static void showFatalError(String text) {
+        Log.e(TAG, "fatal engine error: " + text);
+        Context ctx = SDLActivity.getContext();
+        if (ctx == null) return;
+        Intent i = new Intent(ctx, ErrorActivity.class);
+        i.putExtra(ErrorActivity.EXTRA_TEXT, text);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        ctx.startActivity(i);
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
