@@ -73,13 +73,7 @@ in Options > Controls, "Reset to default" restores this layout):
 | X | Next missile type |
 | Y | Next gun type |
 | Left Menu button | Pause menu |
-| Left grip + A | Next target |
-| Left grip + B | Target your target's attacker |
-| Left grip + X | Next subsystem on target |
-| Left grip + Y | Comms menu |
-| Left grip + right stick up / down | Full speed / full stop |
-| Left grip + left stick click | Look behind |
-| Left grip + right stick click | Chase view on / off |
+| Left grip (hold) + left stick, release the grip | Radial menu above your left hand: shields front / rear, next target, target attacker, next subsystem, countermeasure, nearest friendly, escort ship, bombs / bombers, chase view, comms menu, warp out, balance power, power to engines / shields / weapons |
 
 Comms menu open: left stick up/down picks an order, A or a trigger confirms,
 Y closes the menu.
