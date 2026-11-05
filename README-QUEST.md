@@ -69,7 +69,7 @@ Jet stick layout; Classic swaps the two sticks (see below):
 | Left stick click (hold 1 s) | Warp out (end mission) |
 | Right trigger | Guns |
 | Left trigger | Missiles |
-| Right grip (hold) | Afterburner (same as the left-stick detent) |
+| Right grip (hold) + right stick, let go | Comms ring: wingmen orders step by step, see below |
 | A | Target nearest enemy (next ship if there is no enemy) |
 | B | Target ship in crosshair |
 | X | Next missile type |
@@ -77,8 +77,13 @@ Jet stick layout; Classic swaps the two sticks (see below):
 | Left Menu button | Pause menu (tap) / controller setup: stick layout (hold) |
 | Left grip (hold) + left stick, release the grip | Radial menu above your left hand: shields front / rear, next target, target attacker, next subsystem, countermeasure, nearest friendly, escort ship, bombs / bombers, chase view, comms menu, warp out, balance power, power to engines / shields / weapons |
 
-Comms menu open: left stick up/down picks an order, A or a trigger confirms,
-Y closes the menu.
+**Comms ring:** hold the right grip for a moment and the comms menu opens as a ring
+above your right hand (ships, wings, all fighters, reinforcements, rearm / repair,
+abort rearm). Point the right stick at one and let go of the grip: the next step
+(the ship or wing list, then the orders) stays above your hand; hold the grip again,
+point, let go. Let go with the stick centred to close the comms menu. Greyed-out
+entries can't be used right now. The left stick up/down + A and Y (close) still work
+too.
 
 **Stick layout:** in flight, hold the left Menu button for a moment and a *VR controller
 setup* panel opens in front of you. Point at **Jet** (right stick flies, left stick is the

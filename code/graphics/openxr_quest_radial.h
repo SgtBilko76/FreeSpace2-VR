@@ -17,4 +17,7 @@ enum {
  * top, `selected` (or -1) highlighted. stick_x/stick_y are reserved (unused). */
 void VrRadial_Render(uint8_t* rgba, const char* const* labels, int count, int selected, float stick_x, float stick_y);
 
+/* Same, with dim[i] != 0 drawing item i greyed out (can't be used right now); dim may be NULL. */
+void VrRadial_RenderDim(uint8_t* rgba, const char* const* labels, const int* dim, int count, int selected);
+
 #endif

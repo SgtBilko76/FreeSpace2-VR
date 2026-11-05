@@ -198,6 +198,12 @@ bool hud_squadmsg_ship_order_valid(int shipnum, int order);
 
 void Hud_set_lua_key(int selection);
 
+// VR comms ring (graphics/openxr_quest.cpp): whether MsgItems holds the current menu level, and
+// restarting the menu's 8 s auto-close timer. Items are picked with Hud_set_lua_key(MsgItems index).
+extern int Squad_msg_mode;
+bool hud_squadmsg_items_ready();
+void hud_squadmsg_keep_open();
+
 class HudGaugeSquadMessage: public HudGauge
 {
 protected:

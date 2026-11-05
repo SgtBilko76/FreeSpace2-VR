@@ -114,11 +114,19 @@ static void r_label(uint8_t* img, const char* label, int cx, int cy, RRgba c) {
 }
 
 void VrRadial_Render(uint8_t* rgba, const char* const* labels, int count, int selected, float stick_x, float stick_y) {
+	(void)stick_x;
+	(void)stick_y;
+	VrRadial_RenderDim(rgba, labels, NULL, count, selected);
+}
+
+void VrRadial_RenderDim(uint8_t* rgba, const char* const* labels, const int* dim, int count, int selected) {
 	static const RRgba panel   = { 12, 16, 24, 200 };
 	static const RRgba item    = { 40, 52, 72, 245 };
 	static const RRgba itemSel = { 255, 200, 40, 255 };
 	static const RRgba text    = { 235, 240, 250, 255 };
 	static const RRgba textSel = { 20, 20, 25, 255 };
+	static const RRgba itemDim = { 28, 32, 40, 235 };
+	static const RRgba textDim = { 120, 128, 140, 255 };
 	static const RRgba ring    = { 255, 200, 40, 255 };
 	static const RRgba dot     = { 235, 240, 250, 255 };
 
@@ -138,8 +146,9 @@ void VrRadial_Render(uint8_t* rgba, const char* const* labels, int count, int se
 		const int w     = r_label_width(labels[i]);
 		const int h     = lines * (VR_FONT_HEIGHT + 2);
 		const int sel   = i == selected;
-		r_round_rect(rgba, x - w / 2 - padX, y - h / 2 - padY, x + w / 2 + padX, y + h / 2 + padY, 14, sel ? itemSel : item);
-		r_label(rgba, labels[i], x, y, sel ? textSel : text);
+		const int off   = dim && dim[i];
+		r_round_rect(rgba, x - w / 2 - padX, y - h / 2 - padY, x + w / 2 + padX, y + h / 2 + padY, 14, sel ? itemSel : (off ? itemDim : item));
+		r_label(rgba, labels[i], x, y, sel ? textSel : (off ? textDim : text));
 	}
 
 	/* centre: ring, plus a pointer toward the selected item (redrawn only when the selection
@@ -152,6 +161,4 @@ void VrRadial_Render(uint8_t* rgba, const char* const* labels, int count, int se
 	} else {
 		r_disc(rgba, cx, cy, 12.0f, 0.0f, dot);
 	}
-	(void)stick_x;
-	(void)stick_y;
 }

@@ -2676,6 +2676,15 @@ void Hud_set_lua_key(int selection) {
 	Msg_key_set_from_scripting = true;
 }
 
+bool hud_squadmsg_items_ready() {
+	return !Rebuild_MsgItems;
+}
+
+void hud_squadmsg_keep_open() {
+	if (Player && (Player->flags & PLAYER_FLAGS_MSG_MODE))
+		Msg_mode_timestamp = _timestamp(DEFAULT_MSG_TIMEOUT);
+}
+
 HudGaugeSquadMessage::HudGaugeSquadMessage():
 HudGauge(HUD_OBJECT_SQUAD_MSG, HUD_MESSAGE_BOX, false, false, (VM_EXTERNAL | VM_DEAD_VIEW | VM_WARP_CHASE | VM_PADLOCK_ANY | VM_OTHER_SHIP), 255, 255, 255)
 {

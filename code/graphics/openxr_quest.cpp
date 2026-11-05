@@ -26,6 +26,8 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 #include "io/mouse.h"
 #include "osapi/osapi.h"
 #include "playerman/player.h"
+#include "hud/hudsquadmsg.h"
+#include "gamesnd/gamesnd.h"
 #include "popup/popupdead.h"
 
 #define QLOG(...) __android_log_print(ANDROID_LOG_INFO, "QuestVR", __VA_ARGS__)
@@ -61,10 +63,10 @@ SCP_vector<int> pendingKeyUps;
 // letting it back) holds the afterburner.
 float throttleLever = 0.0f;
 bool boostArmed = false; // lever was at full when the stick came back: the next full push boosts
-// Radial menu in flight: hold the left grip, point the left stick at an item, release the grip
-// to trigger it (stick centred = nothing). Clockwise from the top. An item sends a pad button
+// Radial menus in flight. Left grip held: flight functions, picked with the left stick, released
+// to trigger (stick centred = nothing); clockwise from the top. An item sends a pad button
 // (bound in control_config_quest_touch_defaults) and/or up to two key presses (default keys).
-// The right grip stays the afterburner, so there is no right ring (RADIAL_RIGHT is empty).
+// Right grip held: the comms ring (see commsRingBuild).
 struct RadialItem {
 	const char* label;
 	int button; // SDL_GamepadButton or -1
@@ -88,7 +90,6 @@ const RadialItem RADIAL_LEFT[] = {
 	{ "Power to\nshields", SDL_GAMEPAD_BUTTON_MISC5, 0, 0 },
 	{ "Power to\nweapons", SDL_GAMEPAD_BUTTON_MISC4, 0, 0 },
 };
-const RadialItem RADIAL_RIGHT[] = { { "", -1, 0, 0 } }; // unused (count 0)
 struct Ring {
 	const RadialItem* items;
 	int count;
@@ -97,15 +98,23 @@ struct Ring {
 	int sel = -1;           // highlighted item, -1 = none (stick centred)
 	int pulseItem = -1, pulse = 0; // item whose pad button is held down for a few frames
 	int drawnSel = -2;      // selection in the last uploaded image (-2 = none yet)
+	int gen = 0, drawnGen = -1; // contents version (the right ring is rebuilt from the comms menu)
+	const int* dim = nullptr;    // per item: greyed out
 };
-Ring rings[2] = { { RADIAL_LEFT, static_cast<int>(sizeof(RADIAL_LEFT) / sizeof(RADIAL_LEFT[0])) },
-	{ RADIAL_RIGHT, 0 } };
+Ring rings[2] = { { RADIAL_LEFT, static_cast<int>(sizeof(RADIAL_LEFT) / sizeof(RADIAL_LEFT[0])) }, { nullptr, 0 } };
+constexpr float RIGHT_RING_DELAY = 0.35f; // right grip held this long opens the comms ring
+float gripRDownSince = -1.0f;
 
 void pressKey(int key);
+void commsRingReset();
 
 // stick direction -> ring item (keeps the last one while the stick is between centre and the rim)
 void ringSelect(Ring& r, const XrVector2f& st)
 {
+	if (r.count <= 0) {
+		r.sel = -1;
+		return;
+	}
 	const float mag = std::sqrt(st.x * st.x + st.y * st.y);
 	if (mag > 0.5f) {
 		float ang = std::atan2(st.x, st.y); // clockwise from straight up
@@ -144,6 +153,118 @@ void ringsReset()
 		r.pulse = 0;
 		r.drawnSel = -2;
 	}
+	gripRDownSince = -1.0f;
+	commsRingReset();
+}
+
+// Right grip ring = the comms menu, one level per grip press: hold the right grip (the comms
+// menu opens), point the right stick, release. The next level (ship / wing list, orders) is then
+// shown above the hand until the next press; releasing with the stick centred closes the menu.
+// Items are picked with Hud_set_lua_key (MsgItems index), so it works whatever page the HUD
+// gauge shows. A short tap of the right grip does nothing (the afterburner is the throttle push).
+constexpr int RING_MAX = 16;
+constexpr int RI_MORE = -3;
+bool rightPreview = false;     // comms level shown above the hand while the grip is up
+int commsOffset = 0;           // first MsgItems entry shown when a level has more than fits
+SCP_string rightLabels[RING_MAX];
+RadialItem rightItems[RING_MAX];
+int rightIndex[RING_MAX];  // MsgItems index or RI_MORE
+int rightDim[RING_MAX];
+SCP_string rightSig;           // contents of the built ring
+
+void commsRingReset()
+{
+	rightPreview = false;
+	commsOffset = 0;
+}
+
+// "Destroy my target" -> "Destroy my\ntarget" (two lines for long entries)
+SCP_string ringLabel(const SCP_string& in)
+{
+	SCP_string s = in;
+	if (s.size() > 22)
+		s = s.substr(0, 21) + ".";
+	if (s.size() <= 11)
+		return s;
+	size_t best = SCP_string::npos;
+	for (size_t i = 0; i < s.size(); i++)
+		if (s[i] == ' ' && (best == SCP_string::npos || std::abs((int)i - (int)s.size() / 2) < std::abs((int)best - (int)s.size() / 2)))
+			best = i;
+	if (best != SCP_string::npos)
+		s[best] = '\n';
+	return s;
+}
+
+// fills rings[RIGHT] from the comms menu; comms = the game's comms menu is open
+void commsRingBuild(bool comms)
+{
+	int n = 0;
+	SCP_string sig;
+	auto add = [&n, &sig](const SCP_string& label, int index, int dimmed) {
+		rightLabels[n] = ringLabel(label);
+		rightIndex[n] = index;
+		rightDim[n] = dimmed;
+		rightItems[n] = RadialItem{ rightLabels[n].c_str(), -1, 0, 0 };
+		sig += label + (dimmed ? "~|" : "|");
+		n++;
+	};
+	if (comms && hud_squadmsg_items_ready()) {
+		SCP_vector<int> vis;
+		for (int i = 0; i < static_cast<int>(MsgItems.size()); i++)
+			if (MsgItems[i].active >= 0)
+				vis.push_back(i);
+		const int room = RING_MAX;
+		const bool more = static_cast<int>(vis.size()) > room;
+		const int shown = more ? room - 1 : static_cast<int>(vis.size());
+		if (!more || commsOffset >= static_cast<int>(vis.size()))
+			commsOffset = 0;
+		for (int j = 0; j < shown && commsOffset + j < static_cast<int>(vis.size()); j++) {
+			const int i = vis[commsOffset + j];
+			add(MsgItems[i].text, i, MsgItems[i].active == 0);
+		}
+		if (more)
+			add("More...", RI_MORE, 0);
+		sig = SCP_string(Squad_msg_title) + "#" + sig;
+	}
+	Ring& r = rings[RIGHT];
+	r.items = rightItems;
+	r.count = n;
+	r.dim = rightDim;
+	if (sig != rightSig) {
+		rightSig = sig;
+		r.gen++;
+		if (r.sel >= n)
+			r.sel = -1;
+		if (n > 0)
+			QLOG("right ring: %s", sig.c_str());
+	}
+}
+
+// right grip released with the ring open: run the highlighted entry
+void commsRingRelease(bool comms)
+{
+	Ring& r = rings[RIGHT];
+	if (r.prevOpen && !r.open) {
+		if (r.sel < 0 || r.sel >= r.count) {
+			if (comms)
+				hud_squadmsg_toggle();
+			QLOG("right ring: closed");
+		} else {
+			const int idx = rightIndex[r.sel];
+			if (idx == RI_MORE) {
+				commsOffset += r.count - 1;
+			} else if (comms && idx >= 0 && idx < static_cast<int>(MsgItems.size()) && MsgItems[idx].active > 0) {
+				QLOG("right ring: picked '%s' (%s)", MsgItems[idx].text.c_str(), Squad_msg_title);
+				Hud_set_lua_key(idx);
+				commsOffset = 0;
+			} else {
+				gamesnd_play_iface(InterfaceSounds::GENERAL_FAIL);
+			}
+		}
+	}
+	if (!r.open)
+		r.sel = -1;
+	r.prevOpen = r.open;
 }
 bool prevCommsUp = false, prevCommsDown = false;
 float lastUpdateSeconds = -1.0f;
@@ -878,6 +999,26 @@ void openxr_quest_update(bool stereo_frame)
 					SDL_SetJoystickVirtualButton(pad, b, down);
 			};
 
+			// right grip held = comms ring (the right stick then picks, not flies); a tap does nothing
+			const bool gripRHeld = gripR > 0.5f;
+			if (gripRHeld) {
+				if (gripRDownSince < 0.0f)
+					gripRDownSince = now;
+				const bool wasOpen = rings[RIGHT].open;
+				rings[RIGHT].open = now - gripRDownSince >= RIGHT_RING_DELAY;
+				if (rings[RIGHT].open && !wasOpen && !comms) {
+					commsOffset = 0;
+					hud_squadmsg_toggle(); // open the comms menu: its first level fills the ring
+				}
+				if (rings[RIGHT].open)
+					hud_squadmsg_keep_open();
+			} else {
+				gripRDownSince = -1.0f;
+				rings[RIGHT].open = false;
+			}
+			commsRingBuild(comms || rings[RIGHT].open);
+			rightPreview = !rings[RIGHT].open && comms && rings[RIGHT].count > 0;
+
 			// left ring: open while the left grip is held (not while the comms menu is up)
 			const bool radial = shift && !comms;
 
@@ -886,7 +1027,7 @@ void openxr_quest_update(bool stereo_frame)
 			// A stick that points into a radial menu (or the comms menu) doesn't fly meanwhile.
 			const bool jet = sticks() == VR_STICKS_JET;
 			const XrVector2f flyStick = jet ? stR : stL, thrStick = jet ? stL : stR;
-			const bool leftBusy = comms || radial, rightBusy = false;
+			const bool leftBusy = comms || radial, rightBusy = gripRHeld;
 			const bool flyBusy = jet ? rightBusy : leftBusy, thrBusy = jet ? leftBusy : rightBusy;
 
 			// throttle stick Y: throttle lever (full sweep in about one second). Afterburner detent:
@@ -900,7 +1041,26 @@ void openxr_quest_update(bool stereo_frame)
 			rings[LEFT].open = radial;
 			if (rings[LEFT].open)
 				ringSelect(rings[LEFT], stL);
+			if (rings[RIGHT].open)
+				ringSelect(rings[RIGHT], stR);
 			ringRelease(rings[LEFT]);
+			commsRingRelease(comms);
+			{
+				// test hook: `adb shell setprop debug.questvr.comms open` opens the comms menu, `... <n>`
+				// picks MsgItems entry n (as the ring does); acts once per new value. See the log (right ring: ...).
+				static SCP_string lastComms;
+				char v[PROP_VALUE_MAX] = {};
+				__system_property_get("debug.questvr.comms", v);
+				if (lastComms != v) {
+					lastComms = v;
+					if (!strcmp(v, "open") && !comms)
+						hud_squadmsg_toggle();
+					else if (v[0] >= '0' && v[0] <= '9' && comms) {
+						QLOG("comms test hook: pick %d", atoi(v));
+						Hud_set_lua_key(atoi(v));
+					}
+				}
+			}
 			{
 				// test hook: `adb shell setprop debug.questvr.radial <item>` shows the ring with the item
 				// highlighted (-1 = none); `setprop debug.questvr.radial ""` hides it again. Shown only,
@@ -962,8 +1122,8 @@ void openxr_quest_update(bool stereo_frame)
 				autopilotPulse--;
 			if (warpPulse > 0)
 				warpPulse--;
-			btn(SDL_GAMEPAD_BUTTON_RIGHT_STICK, normal && clickR);
-			btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, normal && (boost || gripR > 0.5f)); // afterburner: detent hold or right grip
+			btn(SDL_GAMEPAD_BUTTON_RIGHT_STICK, normal && !gripRHeld && clickR);
+			btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, normal && boost); // afterburner: throttle push at full throttle
 
 			// ring pad buttons (one short press each); Y also closes an open comms menu
 			for (auto& r : rings) {
@@ -1049,7 +1209,7 @@ const char* openxr_quest_control_hint(int control, int scancode)
 				s += (ch == '\n') ? ' ' : ch;
 		}
 		out = s;
-		out += " (left grip ring)";
+		out += hand == LEFT ? " (left grip ring)" : " (right grip ring)";
 		return out.c_str();
 	};
 	if (control >= 0 && control < static_cast<int>(Control_config.size())) {
@@ -1060,6 +1220,7 @@ const char* openxr_quest_control_hint(int control, int scancode)
 		case MAX_THROTTLE: out = SCP_string(throttleStickName()) + " all the way up"; return out.c_str();
 		case ONE_THIRD_THROTTLE: out = SCP_string(throttleStickName()) + " to one third"; return out.c_str();
 		case TWO_THIRDS_THROTTLE: out = SCP_string(throttleStickName()) + " to two thirds"; return out.c_str();
+		case SQUADMSG_MENU: return "right grip (hold): comms ring";
 		case AFTERBURNER: out = SCP_string(throttleStickName()) + " forward again at full throttle (hold)"; return out.c_str();
 		case END_MISSION: return "left stick click (hold 1 s)";
 		default: break;
@@ -1092,7 +1253,7 @@ const char* openxr_quest_control_hint(int control, int scancode)
 			if (joyBtn(d.btn))
 				return d.name;
 		if (joyBtn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER))
-			return "right grip (hold)";
+			return "throttle stick forward again at full throttle (hold)";
 		for (int h = 0; h < 2; h++)
 			for (int i = 0; i < rings[h].count; i++) {
 				const RadialItem& it = rings[h].items[i];
@@ -1112,19 +1273,20 @@ const char* openxr_quest_control_hint(int control, int scancode)
 
 bool openxr_quest_radial_visible(int hand)
 {
-	return rings[hand].open;
+	return rings[hand].open || (hand == RIGHT && rightPreview);
 }
 
 bool openxr_quest_radial_render(int hand, uint8_t* rgba, bool force)
 {
 	Ring& r = rings[hand];
-	if (!force && r.drawnSel == r.sel)
+	if (!force && r.drawnSel == r.sel && r.drawnGen == r.gen)
 		return false;
 	const char* labels[32];
 	for (int i = 0; i < r.count && i < 32; i++)
 		labels[i] = r.items[i].label;
-	VrRadial_Render(rgba, labels, std::min(r.count, 32), r.sel, 0.0f, 0.0f);
+	VrRadial_RenderDim(rgba, labels, r.dim, std::min(r.count, 32), r.sel);
 	r.drawnSel = r.sel;
+	r.drawnGen = r.gen;
 	return true;
 }
 
