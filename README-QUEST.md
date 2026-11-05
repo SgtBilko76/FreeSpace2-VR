@@ -59,15 +59,16 @@ in Options > Controls, "Reset to default" restores this layout):
 
 | Input | Action |
 |---|---|
-| Left stick | Pitch and turn |
-| Right stick left/right | Roll |
-| Right stick up/down | Throttle (stays where you leave it) |
+| Right stick | Pitch and turn |
+| Left stick up/down | Throttle (stays where you leave it) |
+| Left stick forward again at full throttle (hold) | Afterburner: let the stick back once the throttle is full, then push it forward again |
+| Left stick left/right | Roll |
 | Right stick click | Match target speed |
 | Left stick click (tap) | Autopilot |
 | Left stick click (hold 1 s) | Warp out (end mission) |
 | Right trigger | Guns |
 | Left trigger | Missiles |
-| Right grip (hold) | Afterburner |
+| Right grip (hold) | Afterburner (same as the left-stick detent) |
 | A | Target nearest enemy (next ship if there is no enemy) |
 | B | Target ship in crosshair |
 | X | Next missile type |

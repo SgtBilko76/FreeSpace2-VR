@@ -1964,11 +1964,12 @@ static void control_config_quest_touch_defaults(CC_preset& preset)
 	auto axis = [&b](IoActionId a, short ax) { b[a].take(CC_bind(CID_JOY0, ax, CCF_AXIS), 0); };
 	auto button = [&b](IoActionId a, short btn) { b[a].take(CC_bind(CID_JOY0, btn), 1); };
 
-	// Left stick: pitch + turn. Right stick: X = roll, Y = throttle lever (absolute axis)
-	axis(JOY_HEADING_AXIS, JOY_X_AXIS);      // SDL left X
-	axis(JOY_PITCH_AXIS, JOY_Y_AXIS);        // SDL left Y
-	axis(JOY_BANK_AXIS, JOY_Z_AXIS);         // SDL right X
-	axis(JOY_ABS_THROTTLE_AXIS, JOY_RX_AXIS); // SDL right Y (held lever value)
+	// Virtual pad axes (openxr_quest.cpp feeds them jet-style: Touch right stick = pitch + turn,
+	// Touch left stick X = roll, Touch left stick Y = throttle lever)
+	axis(JOY_HEADING_AXIS, JOY_X_AXIS);      // SDL left X  <- Touch right stick X
+	axis(JOY_PITCH_AXIS, JOY_Y_AXIS);        // SDL left Y  <- Touch right stick Y
+	axis(JOY_BANK_AXIS, JOY_Z_AXIS);         // SDL right X <- Touch left stick X
+	axis(JOY_ABS_THROTTLE_AXIS, JOY_RX_AXIS); // SDL right Y <- held lever value (Touch left stick Y)
 
 	button(FIRE_PRIMARY, TRIGGER_R);                                        // right trigger
 	button(FIRE_SECONDARY, TRIGGER_L);                                      // left trigger
