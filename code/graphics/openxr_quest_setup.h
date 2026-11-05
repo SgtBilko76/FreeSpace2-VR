@@ -1,8 +1,8 @@
 #ifndef OPENXR_QUEST_SETUP_H
 #define OPENXR_QUEST_SETUP_H
 
-/* VR controller setup panel for the Quest build: shown below the menu screen while the
- * game's Options > Controls screen is open, on the same quad as the virtual keyboard
+/* VR controller setup panel for the Quest build: opened in flight by a long press of the
+ * left Menu button, shown on the same quad as the virtual keyboard
  * (VR_KB_WIDTH_PX x VR_KB_HEIGHT_PX). Two buttons pick the stick layout. Drawn by a CPU
  * rasterizer into an RGBA image (premultiplied alpha); input and the quad pose live in
  * openxr_quest.cpp. */

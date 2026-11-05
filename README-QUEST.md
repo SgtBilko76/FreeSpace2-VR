@@ -74,17 +74,18 @@ Jet stick layout; Classic swaps the two sticks (see below):
 | B | Target ship in crosshair |
 | X | Next missile type |
 | Y | Next gun type |
-| Left Menu button | Pause menu |
+| Left Menu button | Pause menu (tap) / controller setup: stick layout (hold) |
 | Left grip (hold) + left stick, release the grip | Radial menu above your left hand: shields front / rear, next target, target attacker, next subsystem, countermeasure, nearest friendly, escort ship, bombs / bombers, chase view, comms menu, warp out, balance power, power to engines / shields / weapons |
 
 Comms menu open: left stick up/down picks an order, A or a trigger confirms,
 Y closes the menu.
 
-**Stick layout:** open *Options → Controls* and a *VR controller setup* panel appears below
-the screen. Point at **Jet** (right stick flies, left stick is the throttle lever and rolls; the
-default) or **Classic** (the old layout: left stick flies, right stick is the throttle lever and
-rolls) and pull the trigger; the choice is saved at once. The boost push works on whichever
-stick is the throttle lever.
+**Stick layout:** in flight, hold the left Menu button for a moment and a *VR controller
+setup* panel opens in front of you. Point at **Jet** (right stick flies, left stick is the
+throttle lever and rolls; the default) or **Classic** (the old layout: left stick flies, right
+stick is the throttle lever and rolls) and pull the trigger; the choice is saved at once. A
+Menu tap or B closes the panel. The mission keeps running while it is open (your ship holds
+its speed and doesn't steer). The boost push works on whichever stick is the throttle lever.
 
 ## Building
 

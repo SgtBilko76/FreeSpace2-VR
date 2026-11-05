@@ -136,5 +136,5 @@ void VrSetup_Render(uint8_t* rgba, int active, int hover0, int hover1)
 		if (sel)
 			s_text(rgba, "(active)", cx, BTN_Y0 + 266, t);
 	}
-	s_text(rgba, "Point and pull the trigger - saved at once", W / 2, 448, dim);
+	s_text(rgba, "Point + trigger: saved at once.  Menu or B: close", W / 2, 448, dim);
 }

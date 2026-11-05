@@ -20,7 +20,6 @@ const char* const OPENXR_QUEST_PAD_NAME = "Quest Touch (VR)";
 #include "graphics/openxr_quest_keyboard.h"
 #include "graphics/openxr_quest_radial.h"
 #include "graphics/openxr_quest_setup.h"
-#include "gamesequence/gamesequence.h"
 #include "osapi/osregistry.h"
 #include "controlconfig/controlsconfig.h"
 #include "io/key.h"
@@ -167,7 +166,8 @@ bool kbTrig[2] = { false, false };    // trigger state per hand (with hysteresis
 bool kbHeld[2] = { false, false };    // this trigger press started on the keyboard
 Uint64 kbRepeatMs = 0;                // next Backspace repeat
 
-// Stick layout, picked on the VR setup panel below Options > Controls and saved in the config:
+// Stick layout, picked on the controller setup panel (long press of the left Menu button in
+// flight) and saved in the config:
 // VR_STICKS_JET (right stick flies, left stick = throttle lever + roll) or VR_STICKS_CLASSIC.
 // The panel shares the keyboard's quad (never both: the keyboard wins).
 int stickLayout = -1;                 // -1 = not read yet
@@ -513,42 +513,53 @@ const char* throttleStickName()
 	return sticks() == VR_STICKS_JET ? "left stick" : "right stick";
 }
 
-// Menus: the setup panel while the game's Options > Controls screen is open. Same quad geometry
-// and trigger rules as the keyboard: onKb[h] = that hand's ray is on the panel.
-void setupUpdate(float trigL, float trigR, bool onKb[2])
-{
-	const bool want = !kbVisible && gameseq_get_state() == GS_STATE_CONTROL_CONFIG;
-	if (want && !suVisible) {
-		keyboardPlace();
-		suHover[LEFT] = suHover[RIGHT] = VR_SETUP_NONE;
-		suDirty = true;
-		QLOG("controller setup panel shown");
-	} else if (!want && suVisible) {
-		QLOG("controller setup panel hidden");
-	}
-	suVisible = want;
+// Controller setup panel in flight: a long press of the left Menu button opens it in front of
+// the player (the mission keeps running; the ship holds its throttle and doesn't steer). Laser
+// + trigger picks a stick layout (saved at once); a Menu tap or B closes it. Never in the menus.
+constexpr float MENU_HOLD_SECONDS = 0.6f;
+float menuDownSince = -1.0f;   // < 0: not held (flight only)
+bool menuHoldUsed = false;     // this press already toggled the panel
 
+void setupOpen(float trigL, float trigR)
+{
+	// chest height, 1.1 m ahead of the recentred head, tilted 20 degrees toward the player
+	kbPos = XrVector3f{ xr_offset.xyz.x, xr_offset.xyz.y - 0.3f, -xr_offset.xyz.z - 1.1f };
+	const float half = -20.0f * 0.5f * 3.14159265f / 180.0f;
+	kbQuat = XrQuaternionf{ std::sin(half), 0.0f, 0.0f, std::cos(half) };
+	suHover[LEFT] = suHover[RIGHT] = VR_SETUP_NONE;
+	// a trigger already held when the panel opens doesn't click it
+	suTrig[LEFT] = trigL > 0.4f;
+	suTrig[RIGHT] = trigR > 0.4f;
+	suVisible = suDirty = true;
+	QLOG("controller setup panel opened");
+}
+
+void setupClose(const char* why)
+{
+	if (suVisible)
+		QLOG("controller setup panel closed (%s)", why);
+	suVisible = false;
+}
+
+// laser + trigger on the open panel (either hand)
+void setupInput(float trigL, float trigR)
+{
 	const float trig[2] = { trigL, trigR };
 	for (int h = 0; h < 2; h++) {
 		float u, v;
-		const bool on = suVisible && keyboardHit(h, u, v);
-		const int hover = on ? VrSetup_ButtonAt(u, v) : VR_SETUP_NONE;
+		const int hover = keyboardHit(h, u, v) ? VrSetup_ButtonAt(u, v) : VR_SETUP_NONE;
 		if (hover != suHover[h]) {
 			suHover[h] = hover;
 			suDirty = true;
 		}
 		const bool down = trig[h] > (suTrig[h] ? 0.4f : 0.6f);
-		if (down && !suTrig[h] && on) {
-			kbHeld[h] = true; // this trigger press belongs to the panel: no mouse click
-			if (hover != VR_SETUP_NONE && hover != sticks()) {
-				stickLayout = hover;
-				os_config_write_uint(STICK_CONFIG_SECTION, STICK_CONFIG_KEY, static_cast<unsigned int>(stickLayout));
-				suDirty = true;
-				QLOG("stick layout set to %s", stickLayout == VR_STICKS_JET ? "jet" : "classic");
-			}
+		if (down && !suTrig[h] && hover != VR_SETUP_NONE && hover != sticks()) {
+			stickLayout = hover;
+			os_config_write_uint(STICK_CONFIG_SECTION, STICK_CONFIG_KEY, static_cast<unsigned int>(stickLayout));
+			suDirty = true;
+			QLOG("stick layout set to %s", stickLayout == VR_STICKS_JET ? "jet" : "classic");
 		}
 		suTrig[h] = down;
-		onKb[h] = onKb[h] || on;
 	}
 }
 
@@ -802,15 +813,40 @@ void openxr_quest_update(bool stereo_frame)
 	const bool a = getBool(btnA), b = getBool(btnB), x = getBool(btnX), y = getBool(btnY);
 	const bool menu = getBool(btnMenu);
 
-	// Left menu button = Escape (pause / back) in every mode
-	if (menu && !prevMenu)
-		pressKey(KEY_ESC);
-	prevMenu = menu;
-
 	// death popup in flight: it is on the HUD layer, so point at that instead of flying
 	const bool hudPointer = stereo_frame && popupdead_is_active();
+	const bool flight = stereo_frame && !hudPointer;
 
-	if (stereo_frame && !hudPointer) {
+	// Left Menu button. Menus: Escape on press. Flight: a tap (sent on release) is Escape (pause),
+	// held MENU_HOLD_SECONDS opens the controller setup panel; while the panel is open a tap closes it.
+	{
+		const float nowS = static_cast<float>(SDL_GetTicks()) / 1000.0f;
+		if (!flight) {
+			if (menu && !prevMenu)
+				pressKey(KEY_ESC);
+			menuDownSince = -1.0f;
+			setupClose("left flight");
+		} else if (menu) {
+			if (!prevMenu) {
+				menuDownSince = nowS;
+				menuHoldUsed = false;
+			} else if (menuDownSince >= 0.0f && !menuHoldUsed && !suVisible && nowS - menuDownSince >= MENU_HOLD_SECONDS) {
+				menuHoldUsed = true;
+				setupOpen(trigL, trigR);
+			}
+		} else if (prevMenu && menuDownSince >= 0.0f) {
+			if (!menuHoldUsed) {
+				if (suVisible)
+					setupClose("Menu");
+				else
+					pressKey(KEY_ESC);
+			}
+			menuDownSince = -1.0f;
+		}
+	}
+	prevMenu = menu;
+
+	if (flight) {
 		// Flight: Touch -> virtual gamepad. Bindings: controlconfig (control_config_quest_touch_defaults)
 		const float now = static_cast<float>(SDL_GetTicks()) / 1000.0f;
 		if (lastUpdateSeconds < 0.0f && Player) {
@@ -820,125 +856,140 @@ void openxr_quest_update(bool stereo_frame)
 		const float dt = (lastUpdateSeconds < 0.0f) ? 0.0f : std::min(0.1f, now - lastUpdateSeconds);
 		lastUpdateSeconds = now;
 
-		const bool shift = gripL > 0.5f;
-		const bool comms = Player && (Player->flags & PLAYER_FLAGS_MSG_MODE);
-		auto btn = [](SDL_GamepadButton b, bool down) {
-			if (pad)
-				SDL_SetJoystickVirtualButton(pad, b, down);
-		};
-
-		// left ring: open while the left grip is held (not while the comms menu is up)
-		const bool radial = shift && !comms;
-
-		// Stick layout (setup panel on Options > Controls): one Touch stick flies (pitch + turn), the
-		// other is the throttle lever (Y) and rolls (X). Jet: right stick flies; classic: left stick.
-		// A stick that points into a radial menu (or the comms menu) doesn't fly meanwhile.
-		const bool jet = sticks() == VR_STICKS_JET;
-		const XrVector2f flyStick = jet ? stR : stL, thrStick = jet ? stL : stR;
-		const bool leftBusy = comms || radial, rightBusy = false;
-		const bool flyBusy = jet ? rightBusy : leftBusy, thrBusy = jet ? leftBusy : rightBusy;
-
-		// throttle stick Y: throttle lever (full sweep in about one second). Afterburner detent:
-		// lever at full + stick pushed again.
-		const float thr = thrBusy ? 0.0f : thrStick.y;
-		if (thr < 0.5f)
-			boostArmed = throttleLever >= 0.999f;
-		const bool boost = boostArmed && thr > 0.85f;
-		if (!boost && std::fabs(thr) > 0.15f)
-			throttleLever = std::max(0.0f, std::min(1.0f, throttleLever + thr * dt));
-		rings[LEFT].open = radial;
-		if (rings[LEFT].open)
-			ringSelect(rings[LEFT], stL);
-		ringRelease(rings[LEFT]);
-		{
-			// test hook: `adb shell setprop debug.questvr.radial <item>` shows the ring with the item
-			// highlighted (-1 = none); `setprop debug.questvr.radial ""` hides it again. Shown only,
-			// never triggered.
-			char v[PROP_VALUE_MAX] = {};
-			if (__system_property_get("debug.questvr.radial", v) > 0) {
-				const int h = LEFT;
-				Ring& r = rings[h];
-				if (!r.prevOpen) {
-					r.open = true;
-					r.sel = std::max(-1, std::min(r.count - 1, atoi(v)));
-				}
-			}
-		}
-
-		// comms menu open: left stick up/down moves the selection, a trigger or A picks it
-		bool commsUp = false, commsDown = false;
-		if (comms) {
-			commsUp = stL.y > 0.6f && !prevCommsUp;
-			commsDown = stL.y < -0.6f && !prevCommsDown;
-		}
-		prevCommsUp = comms && stL.y > 0.6f;
-		prevCommsDown = comms && stL.y < -0.6f;
-
-		if (pad) {
-			// the left stick points into the radial menu while it is open, so it doesn't steer then
-			// pad left stick = pitch + turn, pad right X = roll, pad right Y = throttle lever
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, flyBusy ? 0 : axisValue(flyStick.x));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, flyBusy ? 0 : axisValue(-flyStick.y));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, thrBusy ? 0 : axisValue(thrStick.x));
-			// absolute throttle axis: up (-32767) = full speed, down (+32767) = stop
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, axisValue(1.0f - 2.0f * throttleLever));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, comms ? 0 : triggerValue(trigL));
-			SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, comms ? 0 : triggerValue(trigR));
-		}
-
-		const bool normal = !comms;
-		btn(SDL_GAMEPAD_BUTTON_SOUTH, normal && a);
-		btn(SDL_GAMEPAD_BUTTON_EAST, normal && b);
-		btn(SDL_GAMEPAD_BUTTON_WEST, normal && x);
-		btn(SDL_GAMEPAD_BUTTON_NORTH, normal && y);
-		// left stick click: short tap = autopilot (pad LEFT_STICK), held for WARP_HOLD_SECONDS = warp out
-		if (normal && !radial && clickL) {
-			if (clickLDownSince < 0.0f) {
-				clickLDownSince = now;
-				clickLWarpSent = false;
-			} else if (!clickLWarpSent && now - clickLDownSince >= WARP_HOLD_SECONDS) {
-				clickLWarpSent = true;
-				warpPulse = 2;
+		if (suVisible) {
+			// controller setup panel open: nothing flies, the throttle lever stays where it is
+			ringsReset();
+			boostArmed = false;
+			clickLDownSince = -1.0f;
+			autopilotPulse = warpPulse = 0;
+			setPadNeutral();
+			setupInput(trigL, trigR);
+			if (b && !prevB)
+				setupClose("B");
+			if (prevTrigger) {
+				mouse_mark_button(MOUSE_LEFT_BUTTON, 0);
+				prevTrigger = false;
 			}
 		} else {
-			if (clickLDownSince >= 0.0f && !clickLWarpSent && !clickL)
-				autopilotPulse = 2;
-			clickLDownSince = -1.0f;
-		}
-		btn(SDL_GAMEPAD_BUTTON_LEFT_STICK, autopilotPulse > 0);
-		btn(SDL_GAMEPAD_BUTTON_MISC3, warpPulse > 0);
-		if (autopilotPulse > 0)
-			autopilotPulse--;
-		if (warpPulse > 0)
-			warpPulse--;
-		btn(SDL_GAMEPAD_BUTTON_RIGHT_STICK, normal && clickR);
-		btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, normal && (boost || gripR > 0.5f)); // afterburner: detent hold or right grip
+			const bool shift = gripL > 0.5f;
+			const bool comms = Player && (Player->flags & PLAYER_FLAGS_MSG_MODE);
+			auto btn = [](SDL_GamepadButton b, bool down) {
+				if (pad)
+					SDL_SetJoystickVirtualButton(pad, b, down);
+			};
 
-		// ring pad buttons (one short press each); Y also closes an open comms menu
-		for (auto& r : rings) {
-			for (int i = 0; i < r.count; i++) {
-				if (r.items[i].button < 0)
-					continue;
-				bool down = r.pulse > 0 && r.pulseItem == i;
-				if (r.items[i].button == SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2)
-					down = down || (comms && y);
-				btn(static_cast<SDL_GamepadButton>(r.items[i].button), down);
+			// left ring: open while the left grip is held (not while the comms menu is up)
+			const bool radial = shift && !comms;
+
+			// Stick layout (controller setup panel, long press of the left Menu button): one Touch stick flies (pitch + turn), the
+			// other is the throttle lever (Y) and rolls (X). Jet: right stick flies; classic: left stick.
+			// A stick that points into a radial menu (or the comms menu) doesn't fly meanwhile.
+			const bool jet = sticks() == VR_STICKS_JET;
+			const XrVector2f flyStick = jet ? stR : stL, thrStick = jet ? stL : stR;
+			const bool leftBusy = comms || radial, rightBusy = false;
+			const bool flyBusy = jet ? rightBusy : leftBusy, thrBusy = jet ? leftBusy : rightBusy;
+
+			// throttle stick Y: throttle lever (full sweep in about one second). Afterburner detent:
+			// lever at full + stick pushed again.
+			const float thr = thrBusy ? 0.0f : thrStick.y;
+			if (thr < 0.5f)
+				boostArmed = throttleLever >= 0.999f;
+			const bool boost = boostArmed && thr > 0.85f;
+			if (!boost && std::fabs(thr) > 0.15f)
+				throttleLever = std::max(0.0f, std::min(1.0f, throttleLever + thr * dt));
+			rings[LEFT].open = radial;
+			if (rings[LEFT].open)
+				ringSelect(rings[LEFT], stL);
+			ringRelease(rings[LEFT]);
+			{
+				// test hook: `adb shell setprop debug.questvr.radial <item>` shows the ring with the item
+				// highlighted (-1 = none); `setprop debug.questvr.radial ""` hides it again. Shown only,
+				// never triggered.
+				char v[PROP_VALUE_MAX] = {};
+				if (__system_property_get("debug.questvr.radial", v) > 0) {
+					const int h = LEFT;
+					Ring& r = rings[h];
+					if (!r.prevOpen) {
+						r.open = true;
+						r.sel = std::max(-1, std::min(r.count - 1, atoi(v)));
+					}
+				}
 			}
-			if (r.pulse > 0 && --r.pulse == 0)
-				r.pulseItem = -1;
-		}
 
-		// comms menu
-		btn(SDL_GAMEPAD_BUTTON_DPAD_UP, commsUp);
-		btn(SDL_GAMEPAD_BUTTON_DPAD_DOWN, commsDown);
-		btn(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, comms && (a || trigL > 0.6f || trigR > 0.6f));
+			// comms menu open: left stick up/down moves the selection, a trigger or A picks it
+			bool commsUp = false, commsDown = false;
+			if (comms) {
+				commsUp = stL.y > 0.6f && !prevCommsUp;
+				commsDown = stL.y < -0.6f && !prevCommsDown;
+			}
+			prevCommsUp = comms && stL.y > 0.6f;
+			prevCommsDown = comms && stL.y < -0.6f;
 
-		if (prevTrigger) {
-			mouse_mark_button(MOUSE_LEFT_BUTTON, 0);
-			prevTrigger = false;
+			if (pad) {
+				// the left stick points into the radial menu while it is open, so it doesn't steer then
+				// pad left stick = pitch + turn, pad right X = roll, pad right Y = throttle lever
+				SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTX, flyBusy ? 0 : axisValue(flyStick.x));
+				SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFTY, flyBusy ? 0 : axisValue(-flyStick.y));
+				SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTX, thrBusy ? 0 : axisValue(thrStick.x));
+				// absolute throttle axis: up (-32767) = full speed, down (+32767) = stop
+				SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHTY, axisValue(1.0f - 2.0f * throttleLever));
+				SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, comms ? 0 : triggerValue(trigL));
+				SDL_SetJoystickVirtualAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, comms ? 0 : triggerValue(trigR));
+			}
+
+			const bool normal = !comms;
+			btn(SDL_GAMEPAD_BUTTON_SOUTH, normal && a);
+			btn(SDL_GAMEPAD_BUTTON_EAST, normal && b);
+			btn(SDL_GAMEPAD_BUTTON_WEST, normal && x);
+			btn(SDL_GAMEPAD_BUTTON_NORTH, normal && y);
+			// left stick click: short tap = autopilot (pad LEFT_STICK), held for WARP_HOLD_SECONDS = warp out
+			if (normal && !radial && clickL) {
+				if (clickLDownSince < 0.0f) {
+					clickLDownSince = now;
+					clickLWarpSent = false;
+				} else if (!clickLWarpSent && now - clickLDownSince >= WARP_HOLD_SECONDS) {
+					clickLWarpSent = true;
+					warpPulse = 2;
+				}
+			} else {
+				if (clickLDownSince >= 0.0f && !clickLWarpSent && !clickL)
+					autopilotPulse = 2;
+				clickLDownSince = -1.0f;
+			}
+			btn(SDL_GAMEPAD_BUTTON_LEFT_STICK, autopilotPulse > 0);
+			btn(SDL_GAMEPAD_BUTTON_MISC3, warpPulse > 0);
+			if (autopilotPulse > 0)
+				autopilotPulse--;
+			if (warpPulse > 0)
+				warpPulse--;
+			btn(SDL_GAMEPAD_BUTTON_RIGHT_STICK, normal && clickR);
+			btn(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, normal && (boost || gripR > 0.5f)); // afterburner: detent hold or right grip
+
+			// ring pad buttons (one short press each); Y also closes an open comms menu
+			for (auto& r : rings) {
+				for (int i = 0; i < r.count; i++) {
+					if (r.items[i].button < 0)
+						continue;
+					bool down = r.pulse > 0 && r.pulseItem == i;
+					if (r.items[i].button == SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2)
+						down = down || (comms && y);
+					btn(static_cast<SDL_GamepadButton>(r.items[i].button), down);
+				}
+				if (r.pulse > 0 && --r.pulse == 0)
+					r.pulseItem = -1;
+			}
+
+			// comms menu
+			btn(SDL_GAMEPAD_BUTTON_DPAD_UP, commsUp);
+			btn(SDL_GAMEPAD_BUTTON_DPAD_DOWN, commsDown);
+			btn(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, comms && (a || trigL > 0.6f || trigR > 0.6f));
+
+			if (prevTrigger) {
+				mouse_mark_button(MOUSE_LEFT_BUTTON, 0);
+				prevTrigger = false;
+			}
 		}
 		kbVisible = false;
-		suVisible = false;
 	} else {
 		// Menus: neutral pad, laser pointer drives the mouse
 		lastUpdateSeconds = -1.0f;
@@ -956,13 +1007,10 @@ void openxr_quest_update(bool stereo_frame)
 
 		// virtual keyboard first: a ray on the keyboard neither moves the mouse nor clicks
 		bool onKb[2] = { false, false };
-		if (hudPointer) {
+		if (hudPointer)
 			kbVisible = false;
-			suVisible = false;
-		} else {
+		else
 			keyboardUpdate(trigL, trigR, onKb);
-			setupUpdate(trigL, trigR, onKb);
-		}
 
 		float mx, my;
 		if (!onKb[pointerHand] && (hudPointer ? pointerHitHud(pointerHand, mx, my) : pointerHit(pointerHand, mx, my)))
